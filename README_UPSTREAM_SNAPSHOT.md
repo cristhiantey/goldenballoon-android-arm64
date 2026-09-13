@@ -1,47 +1,4 @@
-# Golden Balloon Android ARM64 — Port experimental
-
-> **Estado:** experimental / en desarrollo. Este port no garantiza compatibilidad ni funcionamiento correcto en todos los dispositivos Android.
-
-Este repositorio contiene un **port no oficial para Android ARM64** basado en el código fuente de **Golden Balloon**. No fue creado desde cero: conserva y adapta trabajo del proyecto original, su decompilación comunitaria y sus dependencias.
-
-## Origen y créditos principales
-
-- **Proyecto base:** [akratch/goldenballoon](https://github.com/akratch/goldenballoon), por **akratch y los colaboradores de Golden Balloon**.
-- **Decompilación comunitaria de Diddy Kong Racing:** [DavidSM64/Diddy-Kong-Racing](https://github.com/DavidSM64/Diddy-Kong-Racing) y sus colaboradores.
-- **Juego original:** desarrollado originalmente por **Rare**. Los derechos, marcas y recursos del juego pertenecen a sus respectivos titulares.
-- **Port Android ARM64:** **Christian Tay**.
-- **Asistencia de IA:** se utilizó inteligencia artificial como apoyo para acelerar adaptación, revisión de código, pruebas, documentación y tareas de desarrollo. La IA no sustituye ni borra la autoría del proyecto base ni de sus colaboradores.
-
-## Objetivo de este port
-
-Esta variante busca llevar Golden Balloon a **Android ARM64**, con trabajo específico sobre integración Android, controles táctiles, ajustes en español, vibración, HUD/opciones de presentación y compatibilidad gráfica móvil. El proyecto sigue siendo experimental y algunos cambios pueden requerir más pruebas en hardware real.
-
-### Pantallas de alta frecuencia
-
-El dispositivo de desarrollo/prueba indicado por el mantenedor dispone de una **pantalla de 144 Hz**. Esto **no significa** que todos los dispositivos vayan a ejecutar el juego a 144 FPS ni que se garantice una frecuencia concreta: el resultado depende de SoC, GPU, controladores, temperatura, energía, configuración y carga del juego.
-
-## Aviso experimental
-
-- Puede no iniciar o presentar errores gráficos, de audio, entrada, rendimiento o estabilidad en determinados teléfonos.
-- No se garantiza compatibilidad con todas las GPU, versiones de Android o controladores.
-- La compatibilidad y el rendimiento pueden variar incluso entre dispositivos con hardware similar.
-- La build publicada debe considerarse de **prueba** y no una versión final.
-
-## ROM y contenido del juego
-
-**Este repositorio y sus releases no incluyen ROM del juego ni assets extraídos de ella.** Para usar el proyecto, debes proporcionar una copia legalmente obtenida y volcada por ti. No compartas ROMs ni archivos derivados de ellas en issues, forks o releases.
-
-## Licencias y procedencia
-
-Se conservan `LICENSE`, `NOTICE.md`, `THIRD_PARTY.md` y `DISCLAIMER.md` del proyecto base. La licencia MIT de Golden Balloon cubre únicamente el trabajo first-party indicado por el proyecto original; el código decompilado y los componentes de terceros conservan sus propios términos y procedencia. Las modificaciones Android de este port se publican respetando esos términos aplicables.
-
-Más detalles específicos de esta variante: [PORT_ANDROID_CREDITS.md](PORT_ANDROID_CREDITS.md) y [LEEME_REVISION_2.md](LEEME_REVISION_2.md).
-
----
-
-## Documentación original de Golden Balloon
-
-La documentación que sigue se conserva para mantener el contexto técnico y la atribución del proyecto base.
+> **Android ARM64, revisión 2 experimental:** consulta [LEEME_REVISION_2.md](LEEME_REVISION_2.md). Menú, HUD, vibración y mandos remotos añadidos al código. Pruebas sin ROM superadas; compilación Android y ejecución en teléfono pendientes en esta revisión.
 
 <p align="center">
   <img src="dist/web/assets/hero.jpg" alt="Golden Balloon" width="820">

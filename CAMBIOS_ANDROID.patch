@@ -1,0 +1,1927 @@
+--- /dev/null
++++ b/.github/workflows/android-arm64.yml
+@@ -0,0 +1,27 @@
++name: Android ARM64
++on:
++  workflow_dispatch:
++permissions:
++  contents: read
++jobs:
++  build:
++    runs-on: ubuntu-24.04
++    timeout-minutes: 45
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-java@v4
++        with:
++          distribution: temurin
++          java-version: '17'
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++      - name: Build and verify Android ARM64 APK
++        run: python3 tools/android/build.py --sdk-only --install-sdk --jobs 2
++      - uses: actions/upload-artifact@v4
++        with:
++          name: GoldenBalloon-Android-ARM64
++          path: |
++            out/GoldenBalloon-arm64-debug.apk
++            out/GoldenBalloon-arm64-symbols.zip
++          if-no-files-found: error
+--- a/.gitignore
++++ b/.gitignore
+@@ -123,3 +123,14 @@
+ dist/web/mdkr-online-tools.wasm
+ dist/web/mdkr-online-tools.js.symbols
+ mdkr64.ini.lock
++
++# Android ARM64 generated files
++.build-tools/
++out/
++android/.gradle/
++android/app/.cxx/
++android/app/build/
++android/local.properties
++third_party/SDL2/
++*.keystore
++colab-build.log
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,5 +1,8 @@
+ cmake_minimum_required(VERSION 3.16)
+ project(mdkr64 C)
++if(ANDROID)
++    include(${CMAKE_SOURCE_DIR}/cmake/android.cmake)
++endif()
+ # Editors and clangd read build-rel/compile_commands.json (see .clangd). Without
+ # it every include resolves against the compiler's bare default search path and
+ # the editor reports missing headers that the real build finds.
+@@ -111,7 +114,7 @@
+ # Native links system SDL2 + OpenGL. Under Emscripten neither exists as a
+ # package: SDL2 comes from the emcc port (-sUSE_SDL=2) and there is no GL
+ # backend in the wasm binary (WebGPU only), so skip the finders entirely.
+-if(NOT EMSCRIPTEN)
++if(NOT EMSCRIPTEN AND NOT ANDROID)
+     find_package(PkgConfig REQUIRED)
+     pkg_check_modules(SDL2 REQUIRED sdl2)
+     if(APPLE)
+@@ -199,7 +202,7 @@
+         -fno-omit-frame-pointer)
+ endif()
+ 
+-if(NOT EMSCRIPTEN)
++if(NOT EMSCRIPTEN AND NOT ANDROID)
+     add_executable(mdkr-save
+         ${CMAKE_SOURCE_DIR}/tools/mdkr_save_cli.c
+         ${CMAKE_SOURCE_DIR}/platform/save_codec.c
+@@ -219,7 +222,7 @@
+                     ${CMAKE_SOURCE_DIR}/tests/test_save_cli.py
+                     --cli $<TARGET_FILE:mdkr-save>)
+     endif()
+-else()
++elseif(EMSCRIPTEN)
+     # ROM- and renderer-free save tooling. The launcher loads this tiny module
+     # before any ROM is selected so backup, import, recovery, and editing remain
+     # available when WebGPU or the game engine cannot start.
+@@ -697,7 +700,7 @@
+ endif()
+ 
+ # glad GL loader — desktop only (no GL in the browser build).
+-if(NOT EMSCRIPTEN)
++if(NOT EMSCRIPTEN AND NOT ANDROID)
+     set(GLAD_SOURCES ${CMAKE_SOURCE_DIR}/lib/glad/src/glad.c)
+ else()
+     set(GLAD_SOURCES "")
+@@ -729,7 +732,17 @@
+     set(MDKR_TARGET mdkr64)
+ endif()
+ 
+-add_executable(${MDKR_TARGET}
++if(ANDROID)
++    add_library(${MDKR_TARGET} SHARED)
++    set_target_properties(${MDKR_TARGET} PROPERTIES OUTPUT_NAME main)
++    target_sources(${MDKR_TARGET} PRIVATE platform/android/android_bridge.c)
++    target_compile_definitions(${MDKR_TARGET} PRIVATE MGB64_PORTMASTER_GLES=1)
++    target_link_options(${MDKR_TARGET} PRIVATE -Wl,--no-undefined
++        -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384)
++else()
++    add_executable(${MDKR_TARGET})
++endif()
++target_sources(${MDKR_TARGET} PRIVATE
+     ${GAME_SOURCES}
+     ${PLATFORM_SOURCES}
+     ${FAST3D_SOURCES}
+@@ -961,7 +974,9 @@
+         endif()
+         target_link_libraries(${MDKR_TARGET} PRIVATE m)
+     endif()
+-    if(APPLE)
++    if(ANDROID)
++        target_link_libraries(${MDKR_TARGET} PRIVATE GLESv3 EGL android log dl)
++    elseif(APPLE)
+         # AVFoundation: AVSpeechSynthesizer, behind platform/a11y_speech_mac.mm.
+         target_link_libraries(${MDKR_TARGET} PRIVATE ${OPENGL_LIB}
+             "-framework AVFoundation" "-framework Foundation")
+--- /dev/null
++++ b/GoldenBalloon_Colab.ipynb
+@@ -0,0 +1,109 @@
++{
++  "cells": [
++    {
++      "cell_type": "markdown",
++      "metadata": {},
++      "source": [
++        "# Golden Balloon — Android ARM64\n",
++        "Compila el proyecto adjunto en Google Colab (entorno CPU). No necesitas subir una ROM: se importa en el teléfono después.\n",
++        "\n",
++        "El botón de ejecución de la celda de compilación instala el SDK/NDK de Android y acepta sus licencias mediante `--install-sdk`. Se recomienda disponer de 8 GB de RAM y 10 GB libres. La primera ejecución necesita Internet.\n"
++      ]
++    },
++    {
++      "cell_type": "code",
++      "metadata": {},
++      "execution_count": null,
++      "outputs": [],
++      "source": [
++        "from google.colab import files\n",
++        "from pathlib import Path\n",
++        "import zipfile\n",
++        "uploaded = files.upload()  # Selecciona GoldenBalloon-Android-ARM64.zip\n",
++        "archive = next(name for name in uploaded if name.lower().endswith('.zip'))\n",
++        "destination = Path('/content/goldenballoon-arm64')\n",
++        "destination.mkdir(exist_ok=True)\n",
++        "with zipfile.ZipFile(archive) as z:\n",
++        "    for item in z.infolist():\n",
++        "        p = Path(item.filename)\n",
++        "        if p.is_absolute() or '..' in p.parts:\n",
++        "            raise ValueError('Ruta no segura en el ZIP')\n",
++        "    z.extractall(destination)\n",
++        "projects = list(destination.rglob('tools/android/build.py'))\n",
++        "assert len(projects) == 1, 'Debe haber exactamente un proyecto en el ZIP'\n",
++        "project = projects[0].parents[2]\n",
++        "print('Proyecto:', project)\n",
++        "del uploaded\n"
++      ]
++    },
++    {
++      "cell_type": "code",
++      "metadata": {},
++      "execution_count": null,
++      "outputs": [],
++      "source": [
++        "import os, subprocess\n",
++        "subprocess.run(['apt-get', 'update', '-qq'], check=True)\n",
++        "subprocess.run(['apt-get', 'install', '-y', '-qq', 'openjdk-17-jdk-headless'], check=True)\n",
++        "os.environ['JAVA_HOME'] = '/usr/lib/jvm/java-17-openjdk-amd64'\n",
++        "# Compilación completa sin Gradle/Maven: usa directamente SDK, NDK, CMake y D8.\n",
++        "log_path = project / 'colab-build.log'\n",
++        "command = ['python3', str(project/'tools/android/build.py'), '--sdk-only', '--install-sdk', '--jobs', '2']\n",
++        "with log_path.open('w') as log:\n",
++        "    process = subprocess.Popen(command, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)\n",
++        "    for line in process.stdout:\n",
++        "        print(line, end=''); log.write(line)\n",
++        "    result = process.wait()\n",
++        "assert result == 0, f'Falló la compilación. Descarga {log_path.name} para revisar el error.'\n"
++      ]
++    },
++    {
++      "cell_type": "code",
++      "metadata": {},
++      "execution_count": null,
++      "outputs": [],
++      "source": [
++        "apk = project / 'out/GoldenBalloon-arm64-debug.apk'\n",
++        "assert apk.is_file(), 'No se generó el APK; revisa la celda anterior'\n",
++        "files.download(str(apk))\n"
++      ]
++    },
++    {
++      "cell_type": "markdown",
++      "metadata": {},
++      "source": [
++        "## Registros y símbolos (opcional)\n",
++        "Los símbolos permiten investigar un cierre nativo sin recompilar. Para actualizaciones instalables, conserva también la clave local de depuración; no la publiques. Una nueva sesión de Colab genera otra clave y Android puede rechazar una actualización sobre una APK firmada con la clave anterior. Exporta tus partidas antes de desinstalar.\n"
++      ]
++    },
++    {
++      "cell_type": "code",
++      "metadata": {},
++      "execution_count": null,
++      "outputs": [],
++      "source": [
++        "# Descomenta el archivo que quieras descargar:\n",
++        "# files.download(str(log_path))\n",
++        "# files.download(str(project/'out/GoldenBalloon-arm64-symbols.zip'))\n",
++        "# files.download(str(project/'.build-tools/goldenballoon-debug.keystore'))\n"
++      ]
++    }
++  ],
++  "metadata": {
++    "kernelspec": {
++      "display_name": "Python 3",
++      "language": "python",
++      "name": "python3"
++    },
++    "language_info": {
++      "name": "python",
++      "version": "3.12"
++    },
++    "colab": {
++      "name": "GoldenBalloon_Colab.ipynb",
++      "provenance": []
++    }
++  },
++  "nbformat": 4,
++  "nbformat_minor": 5
++}
+--- /dev/null
++++ b/LEEME_ANDROID_ARM64.md
+@@ -0,0 +1,144 @@
++# Golden Balloon para Android ARM64
++
++Este paquete adapta el proyecto original del ZIP a Android. Compila el código C/C++ del juego a AArch64 con el NDK y lo integra en una aplicación Android con SDL2 y OpenGL ES 3.2. No ejecuta código MIPS de la ROM: conserva el juego nativo existente y obtiene de tu ROM los recursos gráficos, sonidos y niveles durante la ejecución.
++
++**Estado:** port experimental con compilación y empaquetado verificados. Consulta `VALIDACION_ANDROID.md`. No se ha ejecutado una carrera en un teléfono: la compilación correcta no garantiza ausencia de pantallas negras, fallos de audio o cierres en un controlador concreto.
++
++## Lo que incluye
++
++- Código original del juego, licencias y documentación, con cambios acotados en la plataforma y el renderer.
++- App `org.goldenballoon.mobile`, nombre Golden Balloon e icono del proyecto.
++- Arquitectura `arm64-v8a`, Android 8.0/API 26 o superior, OpenGL ES 3.2.
++- Importación mediante el selector de documentos de Android, sin permisos generales de almacenamiento.
++- Validación estricta de tamaño, orden de bytes, revisión, SHA-256 e índices de recursos; reutiliza el validador original.
++- Controles multitáctiles: stick, A, B, Z, L, R, Start y cuatro botones C. Los mandos siguen pasando por SDL2.
++- Juego horizontal con giro entre ambas orientaciones, pausa/audio de SDL al pasar a segundo plano y reinicio de proceso al volver a jugar.
++- Partidas privadas persistentes y exportación ZIP. No hay interfaz de restauración de partidas en esta versión.
++- Pantalla inicial con límites de presentación de 30, 60 o 120. Esto es un límite, no una garantía de FPS. Mantiene la simulación original.
++- Registro actual y anterior exportables para diagnosticar el arranque.
++- Dos rutas de compilación: Gradle/Android Studio y SDK directo sin Gradle/Maven.
++- Cuaderno `GoldenBalloon_Colab.ipynb`, Dockerfile y flujo manual de GitHub Actions.
++
++No incluye ROM, recursos extraídos de ROM, conexión multijugador nativa, port iOS, emulador ni backend Vulkan/WebGPU para Android. ARM64 es una arquitectura de CPU: un APK Android no se instala en iOS aunque ambos dispositivos usen ARM64. El soporte de GPU depende además de OpenGL ES y su controlador.
++
++## Compilar en Google Colab
++
++1. Abre Google Colab y selecciona **Archivo → Subir cuaderno**.
++2. Sube `GoldenBalloon_Colab.ipynb`, incluido también dentro del ZIP.
++3. Usa un entorno CPU. Ejecuta la celda de carga y sube `GoldenBalloon-Android-ARM64.zip`.
++4. Ejecuta la celda de compilación. Instala Java 17 y el SDK/NDK; `--install-sdk` acepta las licencias de Android SDK.
++5. Ejecuta la celda de descarga para obtener `GoldenBalloon-arm64-debug.apk`.
++6. Instala el APK en el teléfono y selecciona tu ROM desde la pantalla inicial.
++
++No subas la ROM a Colab: no se necesita para compilar. La primera instalación de las herramientas necesita Internet y varios GB de espacio. Recomendación práctica: 8 GB de RAM y 10 GB libres. El tiempo depende de la máquina y la conexión; `--jobs 2` limita la concurrencia para equipos modestos.
++
++## Linux, WSL o servidor Google Cloud
++
++Desde la carpeta que contiene este documento:
++
++```bash
++sudo apt-get update
++sudo apt-get install -y openjdk-17-jdk-headless python3 ca-certificates
++export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
++python3 tools/android/build.py --sdk-only --install-sdk --jobs 2
++```
++
++Salida: `out/GoldenBalloon-arm64-debug.apk` y `out/GoldenBalloon-arm64-symbols.zip`.
++
++`--sdk-only` ejecuta CMake, Clang, compilador Java, D8, aapt2, zipalign y apksigner. Comprueba bibliotecas AArch64, alineación ELF de 16 KiB, alineación del APK y firma. La misma ruta se verificó en este entorno Linux, aunque el servicio Colab no se ejecutó directamente.
++
++Para usar un SDK ya instalado:
++
++```bash
++python3 tools/android/build.py --sdk-only --sdk /ruta/Android/Sdk --jobs 2
++```
++
++Para usar Gradle:
++
++```bash
++python3 tools/android/build.py --sdk /ruta/Android/Sdk --jobs 2
++```
++
++El script descarga Gradle 8.9 y verifica su SHA-256. No depende de una versión arbitraria de Gradle instalada globalmente. La ruta Gradle necesita acceso a Google Maven/Maven Central durante la primera ejecución. Los proxies de una red corporativa deben configurarse en Gradle según esa red.
++
++## Android Studio, Windows y macOS
++
++Requieren Python 3.10+, JDK 17 y un SDK/NDK que soporte el sistema anfitrión. El instalador automático `--install-sdk` está limitado a Linux x86_64. En Windows/macOS instala estos paquetes con Android Studio:
++
++| Componente | Versión fijada |
++|---|---|
++| Android SDK Platform | 35 |
++| Android Build Tools | 35.0.0 |
++| Android NDK | 28.2.13676358 (r28c) |
++| CMake | 3.22.1 |
++| Gradle | 8.9 |
++| Android Gradle Plugin | 8.7.3 |
++| Java | 17 |
++| SDL2 | 2.32.8 |
++
++Prepara las fuentes de dependencias:
++
++```bash
++python3 tools/android/build.py --prepare
++```
++
++Abre la carpeta `android` como proyecto de Android Studio. Selecciona JDK 17 y Gradle 8.9. El script Python es la entrada de compilación distribuida; no se incluye un `gradlew` descargado de forma implícita.
++
++Windows PowerShell, con SDK instalado:
++
++```powershell
++python tools/android/build.py --sdk-only --sdk "$env:LOCALAPPDATA\Android\Sdk"
++```
++
++macOS, con SDK instalado:
++
++```bash
++python3 tools/android/build.py --sdk-only --sdk "$HOME/Library/Android/sdk"
++```
++
++Estas entradas se prepararon para los anfitriones oficiales del NDK. La compilación se verificó en Linux x86_64, no en Windows/macOS. No se promete compilación directa en Termux/Android ARM64: el NDK distribuido por Google requiere un anfitrión compatible. Para compilar desde el navegador del teléfono, usa Colab.
++
++## Docker y GitHub Actions
++
++Linux Docker:
++
++```bash
++docker build --platform linux/amd64 -t goldenballoon-arm64 -f tools/android/Dockerfile .
++docker run --rm --platform linux/amd64 -v "$PWD:/project" goldenballoon-arm64
++```
++
++En GitHub está preparado `.github/workflows/android-arm64.yml`. Tras subir tú el proyecto a un repositorio, ejecútalo desde Actions → Android ARM64 → Run workflow. Se genera un artefacto descargable; no publica una release. Este flujo y Docker no se ejecutaron en sus servicios durante esta entrega.
++
++## ROM admitida y guardados
++
++Usa una copia propia sin comprimir, de **12 MiB exactos (12 582 912 bytes)**. Acepta `.z64`, `.v64` y `.n64`: el motor normaliza el orden de bytes en memoria.
++
++| Revisión | SHA-256 de la imagen normalizada |
++|---|---|
++| US 1.1 / `us.v80` | `7de1a8fb2a9558cfc3d9ad4497df698c1e89cf7095ac1531557df2af40ba8bcf` |
++| EU 1.1 / `pal.v80` | `584d59412b3a8c675f5569516a0406128028929e31544490a4dbc3ab16a038b9` |
++
++La validación rechaza ROM modificada, dañada o de otra revisión. No se desactivaron estas comprobaciones para ocultar un fallo de arranque. Importar una ROM inválida conserva la ROM válida anterior.
++
++Partidas: almacenamiento interno de la app, subcarpeta `saves`. Usa **Exportar partidas guardadas** antes de desinstalar o borrar datos. La compilación SDK directa mantiene su clave de depuración en `.build-tools/goldenballoon-debug.keystore`; no se entrega esa clave. Conserva tu propia clave para poder instalar tus futuras compilaciones como actualizaciones. La ruta Gradle usa su propia clave de depuración: APK con claves distintas no se pueden actualizar entre sí. Una firma de depuración sirve para pruebas, no es una publicación de producción.
++
++## Diagnóstico si sigue apareciendo pantalla negra
++
++1. Vuelve a la pantalla inicial y pulsa **Compartir registros**. Si se cerró el proceso, el lanzador permanece independiente.
++2. Indica modelo exacto del teléfono, versión de Android, GPU, revisión de ROM y momento del fallo.
++3. Con ADB, guarda también el informe del cierre nativo:
++
++```bash
++adb logcat -b crash -d > android-crash.txt
++adb shell dumpsys package org.goldenballoon.mobile > package-info.txt
++```
++
++`session.log` contiene validación de ROM, versión del renderer, compilación de shaders y errores del motor. Android debuggerd captura las fallas nativas; no se instala el manejador de señales de escritorio. `out/GoldenBalloon-arm64-symbols.zip` permite simbolizar las direcciones usando `ndk-stack` o `llvm-addr2line` del NDK. Un fallo anterior a `SDL_main` puede aparecer únicamente en Logcat.
++
++No se fuerza un bucle infinito de reintentos gráficos ni se promete solucionar todas las pantallas negras sin medir el dispositivo.
++
++## Cambios y comprobaciones
++
++Consulta `CAMBIOS_ANDROID.patch` para el diff contra el ZIP de entrada y `VALIDACION_ANDROID.md` para los resultados. Las dependencias de fuentes están en `third_party/archives`, con hashes fijados en `tools/android/build.py`. SDK/NDK, cachés de Gradle y binarios temporales no se distribuyen dentro del ZIP de código.
++
++Referencias técnicas: [SDL2 para Android](https://wiki.libsdl.org/SDL2/README-android), [soporte de páginas de 16 KB](https://developer.android.com/guide/practices/page-sizes), [NDK con CMake](https://developer.android.com/ndk/guides/cmake), [OpenGL ES 3.2 / GLSL ES 3.20](https://registry.khronos.org/OpenGL/specs/es/3.2/GLSL_ES_Specification_3.20.pdf).
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,5 @@
++> **Android ARM64:** consulta [LEEME_ANDROID_ARM64.md](LEEME_ANDROID_ARM64.md). Port experimental, compilación verificada; pendiente validar ejecución en teléfono.
++
+ <p align="center">
+   <img src="dist/web/assets/hero.jpg" alt="Golden Balloon" width="820">
+ </p>
+--- /dev/null
++++ b/VALIDACION_ANDROID.md
+@@ -0,0 +1,68 @@
++# Validación del port Android ARM64
++
++Fecha: 12 de septiembre de 2026. Plataforma anfitriona: Linux x86_64.
++
++## Resultados observados
++
++| Comprobación | Resultado |
++|---|---|
++| CMake + NDK r28c; fuentes completas del juego y SDL2 | Compilación y enlace correctos |
++| Biblioteca `libmain.so` | ELF64, little endian, AArch64 |
++| Enlace `--no-undefined` | Correcto |
++| Java + recursos Android mediante Gradle 8.9 / AGP 8.7.3 | Correcto |
++| `:app:assembleDebug` | BUILD SUCCESSFUL |
++| Ruta alternativa SDK directa sin Gradle/Maven | APK generado y firmado |
++| D8, aapt2, zipalign y apksigner | Correcto |
++| Firma del APK SDK directo | Verificada, esquemas v2 y v3 |
++| `libmain.so`, `libSDL2.so`, `libc++_shared.so` en ambos APK | ARM64 y segmentos LOAD alineados a 16 KiB |
++| `zipalign -c -P 16 4` del APK entregado | Correcto |
++| `tests/check_address_domains.py` del proyecto original | PASS: conversiones controladas en límites de direcciones |
++| Test C de adaptación de interpolación afín | PASS, incluye errores de capacidad y correspondencia de variables |
++| 12 pares de shaders de combinadores + filtro de salida + mapa de sombras | Compilaron y enlazaron en OpenGL ES 3.2 Mesa 25.2.8 |
++| Cuaderno de Colab | JSON válido y sintaxis de celdas Python comprobada |
++
++El APK entregado usa la ruta SDK directa y contiene el mismo código final verificado. SHA-256:
++
++`8e29158f2b2ec4f46d6f1bcedbef1c84b4133e2ea20381244a695653bed74db2`
++
++Los registros abreviados están en `validation/`. Los símbolos de las bibliotecas del APK entregado están en `validation/GoldenBalloon-arm64-symbols.zip`.
++
++## Límites de esta validación
++
++No hubo ROM ni teléfono conectado. No se verificaron carreras, gráficos finales, tiempo de carga, FPS, audio, consumo, temperatura, entrada táctil física, mando, suspensión real, restauración de contexto EGL ni guardados mediante una partida real. Mesa sirve para detectar errores de sintaxis/enlace de GLSL, no certifica un controlador Mali o Adreno. La matriz de 14 pares es representativa, no exhaustiva.
++
++El procedimiento de Colab ejecuta la ruta SDK directa que sí terminó aquí, pero no se lanzó dentro del servicio Colab. No se ejecutaron Docker, GitHub Actions, Windows, macOS ni iOS. No se declara compatibilidad con todas las GPUs o con cualquier entorno sin requisitos.
++
++## Correcciones específicas
++
++- Objetivo Android como biblioteca compartida `libmain.so`, ABI `arm64-v8a`, PIC y enlace de librerías Android.
++- SDL2 se compila desde fuentes fijadas; sus clases Java pertenecen a la misma versión.
++- Inicio `SDL_main`, proceso separado para el juego, importación de documentos y validador de ROM original por JNI.
++- Eliminación de la dependencia del loader OpenGL de escritorio en Android; contexto ES 3.2 y GLSL ES 3.20.
++- Interpolación afín mediante variar `atributo*w` y recuperar con `gl_FragCoord.w`; variables de vertex/fragment coinciden y no requieren `noperspective`.
++- Precisión explícita alta; conversión explícita `float(...)` de las constantes del mezclado de texturas.
++- Depth clamp sólo cuando la extensión ES está disponible; buffer sin color explícito para framebuffer de sombras.
++- Android API 26 usa `posix_memalign` para la arena. Lanzar procesos auxiliares de escritorio devuelve `ENOSYS` en Android.
++- Android conserva su mecanismo de informes de cierre nativo en lugar de depender de `execinfo.h`.
++
++## Reproducir las pruebas
++
++Desde la raíz del proyecto, en Linux con compilador C:
++
++```bash
++cc -std=c11 -Wall -Wextra -Werror -Iplatform/fast3d \
++  tests/test_android_gles_shader.c platform/fast3d/gfx_gles_shader.c \
++  -o /tmp/test_android_gles
++/tmp/test_android_gles
++python3 tests/check_address_domains.py
++python3 tools/android/verify_apk.py out/GoldenBalloon-arm64-debug.apk
++```
++
++Para los shaders del generador real, se necesita EGL/Mesa ES 3.2, compilador C y SDL2 preparado con `--prepare`:
++
++```bash
++export ANDROID_NDK_HOME=/ruta/Android/Sdk/ndk/28.2.13676358
++python3 tests/check_android_gles_driver.py
++```
++
++Las referencias oficiales de las interfaces usadas aparecen al final de `LEEME_ANDROID_ARM64.md`.
+--- /dev/null
++++ b/android/app/build.gradle
+@@ -0,0 +1,30 @@
++plugins { id 'com.android.application' }
++android {
++    namespace 'org.goldenballoon.mobile'
++    compileSdk 35
++    ndkVersion '28.2.13676358'
++    defaultConfig {
++        applicationId 'org.goldenballoon.mobile'
++        minSdk 26
++        targetSdk 35
++        versionCode 1
++        versionName '1.7.0-arm64.1'
++        ndk { abiFilters 'arm64-v8a' }
++        externalNativeBuild { cmake {
++            arguments '-DANDROID_STL=c++_shared', '-DBUILD_TESTING=OFF', '-DCMAKE_BUILD_TYPE=RelWithDebInfo'
++            targets 'mdkr64'
++        } }
++    }
++    externalNativeBuild { cmake { path '../../CMakeLists.txt'; version '3.22.1' } }
++    sourceSets { main.java.srcDirs += '../../third_party/SDL2/android-project/app/src/main/java' }
++    buildTypes {
++        debug { jniDebuggable true }
++        release { minifyEnabled false; ndk { debugSymbolLevel 'FULL' } }
++    }
++    compileOptions {
++        sourceCompatibility JavaVersion.VERSION_1_8
++        targetCompatibility JavaVersion.VERSION_1_8
++    }
++    packaging { jniLibs { useLegacyPackaging false } }
++}
++
+--- /dev/null
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -0,0 +1,22 @@
++<manifest xmlns:android="http://schemas.android.com/apk/res/android">
++    <uses-feature android:glEsVersion="0x00030002" android:required="true" />
++    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
++    <application android:label="Golden Balloon" android:icon="@drawable/ic_launcher"
++        android:theme="@android:style/Theme.Material.NoActionBar"
++        android:allowBackup="false" android:supportsRtl="true">
++        <activity android:name=".LauncherActivity" android:exported="true">
++            <intent-filter>
++                <action android:name="android.intent.action.MAIN" />
++                <category android:name="android.intent.category.LAUNCHER" />
++            </intent-filter>
++        </activity>
++        <activity android:name=".GameActivity" android:exported="false"
++            android:process=":game" android:screenOrientation="sensorLandscape"
++            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|uiMode|navigation|density"
++            android:hardwareAccelerated="true" />
++        <provider android:name=".ExportProvider"
++            android:authorities="${applicationId}.files" android:exported="false"
++            android:grantUriPermissions="true">
++        </provider>
++    </application>
++</manifest>
+--- /dev/null
++++ b/android/app/src/main/java/org/goldenballoon/mobile/ExportProvider.java
+@@ -0,0 +1,39 @@
++package org.goldenballoon.mobile;
++
++import android.content.*;
++import android.database.*;
++import android.net.Uri;
++import android.os.ParcelFileDescriptor;
++import android.provider.OpenableColumns;
++import java.io.*;
++
++/** Read-only exports. Android grants temporary access only to the selected URI. */
++public final class ExportProvider extends ContentProvider {
++    @Override public boolean onCreate() { return true; }
++    private File resolve(Uri uri) throws FileNotFoundException {
++        String name=uri.getLastPathSegment();
++        if (uri.getPathSegments().size()!=1 || !("goldenballoon-saves.zip".equals(name) || "goldenballoon-logs.zip".equals(name)))
++            throw new FileNotFoundException("Unknown export");
++        return new File(new File(getContext().getCacheDir(),"exports"),name);
++    }
++    @Override public ParcelFileDescriptor openFile(Uri uri,String mode) throws FileNotFoundException {
++        if (!"r".equals(mode)) throw new FileNotFoundException("Read-only export");
++        return ParcelFileDescriptor.open(resolve(uri),ParcelFileDescriptor.MODE_READ_ONLY);
++    }
++    @Override public String getType(Uri uri) { return "application/zip"; }
++    @Override public Cursor query(Uri uri,String[] projection,String selection,String[] args,String order) {
++        String[] columns=projection==null ? new String[]{OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE}:projection;
++        MatrixCursor cursor=new MatrixCursor(columns);
++        try {
++            File f=resolve(uri); Object[] values=new Object[columns.length];
++            for(int i=0;i<columns.length;i++) {
++                if(OpenableColumns.DISPLAY_NAME.equals(columns[i])) values[i]=f.getName();
++                else if(OpenableColumns.SIZE.equals(columns[i])) values[i]=f.length();
++            } cursor.addRow(values);
++        } catch(FileNotFoundException ignored) {}
++        return cursor;
++    }
++    @Override public Uri insert(Uri uri,ContentValues values) { throw new UnsupportedOperationException(); }
++    @Override public int delete(Uri uri,String selection,String[] args) { throw new UnsupportedOperationException(); }
++    @Override public int update(Uri uri,ContentValues values,String selection,String[] args) { throw new UnsupportedOperationException(); }
++}
+--- /dev/null
++++ b/android/app/src/main/java/org/goldenballoon/mobile/GameActivity.java
+@@ -0,0 +1,44 @@
++package org.goldenballoon.mobile;
++
++import android.os.Bundle;
++import android.view.*;
++import android.widget.RelativeLayout;
++import org.libsdl.app.SDLActivity;
++
++public final class GameActivity extends SDLActivity {
++    static native void nativeTouch(int buttons, int x, int y);
++    private TouchControls controls;
++    @Override protected String[] getLibraries() { return new String[]{"c++_shared", "SDL2", "main"}; }
++    @Override protected String[] getArguments() {
++        int fps = getIntent().getIntExtra("fps", 30);
++        if (fps != 30 && fps != 60 && fps != 120) fps = 30;
++        return new String[]{"--rom", new java.io.File(getFilesDir(), "game.rom").getAbsolutePath(),
++            "--pure", "--video-set", "Video.FrameLimit="+fps};
++    }
++    @Override protected void onCreate(Bundle state) {
++        super.onCreate(state);
++        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
++        getWindow().getDecorView().setSystemUiVisibility(5894);
++        if (mLayout != null) {
++            controls = new TouchControls(this);
++            mLayout.addView(controls, new RelativeLayout.LayoutParams(-1,-1));
++        }
++    }
++    @Override protected void onPause() {
++        if (controls != null) controls.reset();
++        super.onPause();
++    }
++    @Override public void onWindowFocusChanged(boolean focus) {
++        super.onWindowFocusChanged(focus);
++        if (!focus && controls != null) controls.reset();
++    }
++    @Override public void onBackPressed() { sendQuit(); }
++    private void sendQuit() { nativeSendQuit(); }
++    @Override protected void onDestroy() {
++        if (controls != null) controls.reset();
++        super.onDestroy();
++        // SDL's static engine and game globals start fresh for each Play.
++        // This Activity is explicitly isolated in :game; the launcher survives.
++        android.os.Process.killProcess(android.os.Process.myPid());
++    }
++}
+--- /dev/null
++++ b/android/app/src/main/java/org/goldenballoon/mobile/LauncherActivity.java
+@@ -0,0 +1,120 @@
++package org.goldenballoon.mobile;
++
++import android.app.*;
++import android.content.*;
++import android.net.Uri;
++import android.os.Bundle;
++import android.widget.*;
++import java.io.*;
++import java.nio.file.*;
++import java.util.concurrent.*;
++import java.util.zip.*;
++
++public final class LauncherActivity extends Activity {
++    private static final int PICK_ROM = 10;
++    private final ExecutorService io = Executors.newSingleThreadExecutor();
++    private TextView status;
++    private Button play, select;
++    private boolean busy;
++    private static native String nativeValidate(String path);
++    static { System.loadLibrary("c++_shared"); System.loadLibrary("SDL2"); System.loadLibrary("main"); }
++    private File rom() { return new File(getFilesDir(), "game.rom"); }
++    @Override public void onCreate(Bundle state) {
++        super.onCreate(state);
++        LinearLayout box = new LinearLayout(this); box.setOrientation(LinearLayout.VERTICAL);
++        box.setPadding(32, 48, 32, 24);
++        ScrollView scroll = new ScrollView(this); scroll.addView(box); setContentView(scroll);
++        TextView title = new TextView(this); title.setText("Golden Balloon\nAndroid ARM64"); title.setTextSize(28); box.addView(title);
++        status = new TextView(this); status.setTextSize(16); box.addView(status);
++        select = add(box, "Importar ROM (.z64, .v64, .n64)", () -> {
++            Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE);
++            startActivityForResult(pick, PICK_ROM);
++        });
++        play = add(box, "Jugar", this::validateAndPlay);
++        TextView label = new TextView(this); label.setText("Límite de presentación"); box.addView(label);
++        Spinner fps = new Spinner(this);
++        String[] rates = {"30", "60", "120"};
++        fps.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, rates));
++        int saved = getPreferences(0).getInt("fps", 0); fps.setSelection(saved);
++        fps.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
++            public void onNothingSelected(android.widget.AdapterView<?> p) {}
++            public void onItemSelected(android.widget.AdapterView<?> p, android.view.View v, int n, long id) {
++                getPreferences(0).edit().putInt("fps", n).apply();
++            }
++        }); box.addView(fps);
++        add(box, "Compartir registros", () -> export(false));
++        add(box, "Exportar partidas guardadas", () -> export(true));
++        TextView notes = new TextView(this);
++        notes.setText("Requiere OpenGL ES 3.2. Usa tu ROM US 1.1 o EU 1.1 de 12 MiB. Los datos se leen de la ROM en el teléfono.\n\nTáctil y mandos compatibles con SDL. 60/120 FPS dependen del dispositivo y la pantalla. El port conserva la simulación original."); box.addView(notes);
++        refresh();
++    }
++    private Button add(LinearLayout box, String text, Runnable action) {
++        Button b = new Button(this); b.setText(text); b.setOnClickListener(v -> action.run()); box.addView(b); return b;
++    }
++    private void refresh() {
++        play.setEnabled(!busy && rom().isFile()); select.setEnabled(!busy);
++        if (!busy) status.setText(rom().isFile() ? "ROM importada. Lista para validar e iniciar." : "Selecciona tu ROM para comenzar.");
++    }
++    private void fail(Exception ex) { busy = false; refresh(); new AlertDialog.Builder(this).setTitle("No se pudo completar").setMessage(ex.getMessage()).setPositiveButton("Aceptar", null).show(); }
++    @Override protected void onActivityResult(int request, int result, Intent data) {
++        super.onActivityResult(request, result, data);
++        if (request != PICK_ROM || result != RESULT_OK || data == null || data.getData() == null) return;
++        Uri uri = data.getData(); busy = true; refresh(); status.setText("Copiando y verificando la ROM…");
++        io.execute(() -> {
++            File temp = new File(getFilesDir(), "import.tmp");
++            try {
++                try (InputStream in = getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(temp)) {
++                    if (in == null) throw new IOException("No se pudo leer el documento.");
++                    byte[] b = new byte[65536]; int n; long total = 0;
++                    while ((n = in.read(b)) != -1) {
++                        total += n; if (total > 12582912L) throw new IOException("La ROM supera 12 MiB. Selecciona el archivo sin ZIP.");
++                        out.write(b, 0, n);
++                    } out.getFD().sync();
++                }
++                String error = nativeValidate(temp.getAbsolutePath());
++                if (error != null) throw new IOException(error);
++                Files.move(temp.toPath(), rom().toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
++                runOnUiThread(() -> { busy = false; refresh(); });
++            } catch (Exception ex) { temp.delete(); runOnUiThread(() -> fail(ex)); }
++        });
++    }
++    private void validateAndPlay() {
++        ActivityManager am = (ActivityManager)getSystemService(ACTIVITY_SERVICE);
++        if (am.getDeviceConfigurationInfo().reqGlEsVersion < 0x00030002) {
++            fail(new IOException("Este port requiere OpenGL ES 3.2.")); return;
++        }
++        busy = true; refresh(); status.setText("Verificando integridad…");
++        int fps = new int[]{30,60,120}[getPreferences(0).getInt("fps",0)];
++        io.execute(() -> {
++            String error = nativeValidate(rom().getAbsolutePath());
++            runOnUiThread(() -> {
++                busy = false; refresh();
++                if (error != null) { fail(new IOException(error)); return; }
++                startActivity(new Intent(this, GameActivity.class).putExtra("fps", fps));
++            });
++        });
++    }
++    private void export(boolean saves) {
++        io.execute(() -> {
++            try {
++                File dir = new File(getCacheDir(), "exports"); if (!dir.exists() && !dir.mkdirs()) throw new IOException("No se pudo crear la exportación.");
++                File out = new File(dir, saves ? "goldenballoon-saves.zip" : "goldenballoon-logs.zip");
++                try (ZipOutputStream z = new ZipOutputStream(new FileOutputStream(out))) {
++                    if (saves) zipDir(z, new File(getFilesDir(), "saves"), "saves/");
++                    else for (String n : new String[]{"session.log", "session-previous.log"}) zipFile(z, new File(getFilesDir(), n), n);
++                }
++                Uri uri = new Uri.Builder().scheme("content").authority(getPackageName()+".files").appendPath(out.getName()).build();
++                runOnUiThread(() -> startActivity(Intent.createChooser(new Intent(Intent.ACTION_SEND).setType("application/zip").putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), "Compartir")));
++            } catch (Exception ex) { runOnUiThread(() -> fail(ex)); }
++        });
++    }
++    private void zipDir(ZipOutputStream z, File dir, String prefix) throws IOException {
++        File[] files = dir.listFiles(); if (files == null) return;
++        for (File f : files) { if (f.isDirectory()) zipDir(z,f,prefix+f.getName()+"/"); else zipFile(z,f,prefix+f.getName()); }
++    }
++    private void zipFile(ZipOutputStream z, File f, String name) throws IOException {
++        if (!f.isFile()) return; z.putNextEntry(new ZipEntry(name));
++        try (InputStream in = new FileInputStream(f)) { byte[] b = new byte[65536]; int n; while ((n=in.read(b)) != -1) z.write(b,0,n); } z.closeEntry();
++    }
++    @Override protected void onDestroy() { io.shutdown(); super.onDestroy(); }
++}
+--- /dev/null
++++ b/android/app/src/main/java/org/goldenballoon/mobile/TouchControls.java
+@@ -0,0 +1,62 @@
++package org.goldenballoon.mobile;
++
++import android.content.Context;
++import android.graphics.*;
++import android.view.*;
++import java.util.*;
++
++/** Multi-pointer controls. One atomic snapshot prevents mixed-axis samples. */
++final class TouchControls extends View {
++    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
++    private final Map<Integer, PointF> pointers = new HashMap<>();
++    private int buttons, stickId = -1;
++    private float sx, sy, radius, unit;
++    // Coordinates are expressed as width/height fractions; size follows height.
++    private final float[][] keys = {
++        {.91f,.70f,0x8000}, {.80f,.83f,0x4000}, // A, B
++        {.91f,.36f,0x0010}, {.77f,.36f,0x2000}, // R, Z
++        {.08f,.20f,0x0020}, {.50f,.12f,0x1000}, // L, Start
++        {.68f,.56f,0x0008}, {.68f,.86f,0x0004}, // C up/down
++        {.62f,.71f,0x0002}, {.74f,.71f,0x0001}  // C left/right
++    };
++    private final String[] names = {"A", "B", "R", "Z", "L", "START", "C↑", "C↓", "C←", "C→"};
++    TouchControls(Context c) { super(c); setFocusable(false); setContentDescription("Controles táctiles del juego"); }
++    void reset() { pointers.clear(); stickId=-1; buttons=0; sx=sy=0; GameActivity.nativeTouch(0,0,0); invalidate(); }
++    @Override protected void onSizeChanged(int w,int h,int oldw,int oldh) { unit=Math.min(h,w*.56f); radius=unit*.14f; }
++    @Override public boolean onTouchEvent(MotionEvent e) {
++        int action=e.getActionMasked(), changed=e.getActionIndex();
++        if (action==MotionEvent.ACTION_CANCEL) { reset(); return true; }
++        pointers.clear();
++        for(int i=0;i<e.getPointerCount();i++) {
++            if ((action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_POINTER_UP) && i==changed) {
++                if(e.getPointerId(i)==stickId) stickId=-1; continue;
++            }
++            pointers.put(e.getPointerId(i),new PointF(e.getX(i),e.getY(i)));
++        }
++        buttons=0; sx=sy=0;
++        float cx=getWidth()*.16f, cy=getHeight()*.70f;
++        for(Map.Entry<Integer,PointF> entry:pointers.entrySet()) {
++            PointF p=entry.getValue();
++            if (stickId<0 && p.x<getWidth()*.38f && p.y>getHeight()*.38f) stickId=entry.getKey();
++            if (entry.getKey()==stickId) {
++                float dx=(p.x-cx)/radius,dy=(cy-p.y)/radius;
++                float len=(float)Math.sqrt(dx*dx+dy*dy);
++                if(len>.12f) { sx=dx/Math.max(1,len); sy=dy/Math.max(1,len); }
++            } else {
++                for(float[] k:keys) if(Math.hypot(p.x-getWidth()*k[0],p.y-getHeight()*k[1])<unit*.065f) buttons|=(int)k[2];
++            }
++        }
++        GameActivity.nativeTouch(buttons,Math.round(sx*80),Math.round(sy*80)); invalidate(); return true;
++    }
++    @Override protected void onDraw(Canvas c) {
++        super.onDraw(c); float cx=getWidth()*.16f,cy=getHeight()*.70f;
++        paint.setColor(0x50708090); c.drawCircle(cx,cy,radius,paint);
++        paint.setColor(0xAAFFFFFF); c.drawCircle(cx+sx*radius*.65f,cy-sy*radius*.65f,radius*.34f,paint);
++        paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(unit*.032f);
++        for(int i=0;i<keys.length;i++) {
++            float[] k=keys[i]; float x=getWidth()*k[0],y=getHeight()*k[1];
++            paint.setColor((buttons&(int)k[2])!=0 ? 0xCC3595FF:0x60708090); c.drawCircle(x,y,unit*.057f,paint);
++            paint.setColor(Color.WHITE); c.drawText(names[i],x,y-(paint.ascent()+paint.descent())/2,paint);
++        }
++    }
++}
+--- /dev/null
++++ b/android/build.gradle
+@@ -0,0 +1 @@
++plugins { id 'com.android.application' version '8.7.3' apply false }
+--- /dev/null
++++ b/android/gradle.properties
+@@ -0,0 +1,4 @@
++org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
++org.gradle.workers.max=2
++android.useAndroidX=true
++android.nonTransitiveRClass=true
+--- /dev/null
++++ b/android/settings.gradle
+@@ -0,0 +1,7 @@
++pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
++dependencyResolutionManagement {
++    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
++    repositories { google(); mavenCentral() }
++}
++rootProject.name = 'GoldenBalloonARM64'
++include ':app'
+--- /dev/null
++++ b/cmake/android.cmake
+@@ -0,0 +1,28 @@
++# Android consumes the same game/platform source list as desktop.
++if(NOT ANDROID_ABI STREQUAL "arm64-v8a")
++    message(FATAL_ERROR "This port targets arm64-v8a. Set ANDROID_ABI=arm64-v8a.")
++endif()
++set(CMAKE_POSITION_INDEPENDENT_CODE ON)
++set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
++set(MDKR_APP OFF CACHE BOOL "" FORCE)
++set(MDKR_WEBGPU_BACKEND OFF CACHE BOOL "" FORCE)
++set(MDKR_CHARACTER_KTX2 OFF CACHE BOOL "" FORCE)
++set(MDKR_CHARACTER_LOD_TOOLS OFF CACHE BOOL "" FORCE)
++set(MDKR_NATIVE_PHONE_PARTY OFF CACHE BOOL "" FORCE)
++set(MDKR_ENABLE_ONLINE_BETA OFF CACHE BOOL "" FORCE)
++set(MDKR_ENABLE_ONLINE_ROOM_PREVIEW OFF CACHE BOOL "" FORCE)
++set(SDL_SHARED ON CACHE BOOL "" FORCE)
++set(SDL_STATIC OFF CACHE BOOL "" FORCE)
++set(SDL_TEST OFF CACHE BOOL "" FORCE)
++set(SDL_TESTS OFF CACHE BOOL "" FORCE)
++set(SDL2_DIR "${CMAKE_SOURCE_DIR}/third_party/SDL2" CACHE PATH "SDL2 sources")
++if(NOT EXISTS "${SDL2_DIR}/CMakeLists.txt")
++    message(FATAL_ERROR "Run python3 tools/android/build.py --prepare first (SDL2 missing).")
++endif()
++add_subdirectory("${SDL2_DIR}" "${CMAKE_BINARY_DIR}/sdl2")
++set(SDL2_INCLUDE_DIRS "${SDL2_DIR}/include")
++set(SDL2_LIBRARIES SDL2)
++
++if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/archives")
++    set(ENV{MDKR_CHARACTER_TEXT_DEP_CACHE} "${CMAKE_SOURCE_DIR}/third_party/archives")
++endif()
+--- /dev/null
++++ b/platform/android/android_bridge.c
+@@ -0,0 +1,78 @@
++/* Android entry, strict ROM validation and atomic UI->engine input. */
++#include <jni.h>
++#include <SDL.h>
++#include <SDL_system.h>
++#include <stdatomic.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <sys/stat.h>
++#include "android_bridge.h"
++#include "rom_validation.h"
++
++_Static_assert(sizeof(void *) == 8, "Android build must be LP64");
++static _Atomic uint32_t touch_state;
++void mdkr_android_read_touch(uint16_t *buttons, int8_t *x, int8_t *y) {
++    uint32_t value = atomic_load_explicit(&touch_state, memory_order_relaxed);
++    *buttons = (uint16_t)value;
++    *x = (int8_t)(value >> 16); *y = (int8_t)(value >> 24);
++}
++JNIEXPORT void JNICALL Java_org_goldenballoon_mobile_GameActivity_nativeTouch(
++    JNIEnv *env, jclass cls, jint buttons, jint x, jint y) {
++    (void)env; (void)cls;
++    if (x < -80) x = -80; if (x > 80) x = 80;
++    if (y < -80) y = -80; if (y > 80) y = 80;
++    uint32_t value = (uint16_t)buttons | ((uint32_t)(uint8_t)x << 16)
++                   | ((uint32_t)(uint8_t)y << 24);
++    atomic_store_explicit(&touch_state, value, memory_order_relaxed);
++}
++JNIEXPORT jstring JNICALL Java_org_goldenballoon_mobile_LauncherActivity_nativeValidate(
++    JNIEnv *env, jclass cls, jstring path) {
++    (void)cls;
++    const char *name = (*env)->GetStringUTFChars(env, path, NULL);
++    if (!name) return NULL;
++    FILE *f = fopen(name, "rb");
++    (*env)->ReleaseStringUTFChars(env, path, name);
++    if (!f) return (*env)->NewStringUTF(env, "No se puede abrir la ROM.");
++    uint8_t *bytes = malloc(DKR_ROM_SIZE_BYTES);
++    if (!bytes) { fclose(f); return (*env)->NewStringUTF(env, "Memoria insuficiente."); }
++    size_t n = fread(bytes, 1, DKR_ROM_SIZE_BYTES, f);
++    int extra = fgetc(f), io_error = ferror(f);
++    fclose(f);
++    DkrRomValidation result;
++    int valid = 0;
++    if (!io_error && n == DKR_ROM_SIZE_BYTES && extra == EOF)
++        valid = dkr_rom_validate_image(bytes, (uint32_t)n, "ROM", NULL, &result);
++    free(bytes);
++    if (io_error || n != DKR_ROM_SIZE_BYTES || extra != EOF)
++        return (*env)->NewStringUTF(env, "La ROM debe tener exactamente 12 MiB, sin comprimir.");
++    return valid ? NULL : (*env)->NewStringUTF(env, result.message);
++}
++int mdkr64_headless_main(int argc, char **argv);
++JNIEXPORT int SDL_main(int argc, char **argv);
++JNIEXPORT int SDL_main(int argc, char **argv) {
++    const char *root = SDL_AndroidGetInternalStoragePath();
++    if (!root || chdir(root)) {
++        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Golden Balloon", "No se puede abrir el almacenamiento interno.", NULL);
++        return 1;
++    }
++    if (mkdir("saves", 0700) && access("saves", W_OK)) return 1;
++    /* Keep a bounded per-launch file available through Android's share sheet. */
++    (void)rename("session.log", "session-previous.log");
++    if (!freopen("session.log", "a", stdout) || !freopen("session.log", "a", stderr)) return 1;
++    setvbuf(stdout, NULL, _IOLBF, 0); setvbuf(stderr, NULL, _IOLBF, 0);
++    setenv("MDKR_SAVE_DIR", "saves", 1);
++    setenv("MDKR_VIDEO_CONFIG_PATH", "video.ini", 1);
++    setenv("MDKR_RENDERER", "gl", 1);
++    setenv("MDKR_RENDER_SCALE", "1", 1);
++    setenv("MDKR_MSAA", "0", 1);
++    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
++    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "1");
++    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE_PAUSEAUDIO, "1");
++    int status = mdkr64_headless_main(argc, argv);
++    fprintf(stderr, "[ANDROID] Engine exit=%d\n", status);
++    if (status) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Golden Balloon",
++        "El motor no pudo iniciar. Vuelve al inicio y comparte el registro de diagnostico.", NULL);
++    return status;
++}
+--- /dev/null
++++ b/platform/android/android_bridge.h
+@@ -0,0 +1,5 @@
++#ifndef MDKR_ANDROID_BRIDGE_H
++#define MDKR_ANDROID_BRIDGE_H
++#include <stdint.h>
++void mdkr_android_read_touch(uint16_t *buttons, int8_t *x, int8_t *y);
++#endif
+--- /dev/null
++++ b/platform/fast3d/gfx_gles_shader.c
+@@ -0,0 +1,34 @@
++#include "gfx_gles_shader.h"
++#include <stdio.h>
++#include <string.h>
++
++static bool splice(char *s, size_t cap, char *at, size_t remove, const char *insert) {
++    size_t n = strlen(s), add = strlen(insert), offset = (size_t)(at-s);
++    if (offset > n || remove > n-offset || n-remove+add >= cap) return false;
++    memmove(at+add,at+remove,n-offset-remove+1);
++    memcpy(at,insert,add); return true;
++}
++bool mdkr_gles_affine_shader(char *vs, size_t vcap, char *fs, size_t fcap) {
++    char *at;
++    while ((at = strstr(vs, "noperspective out ")) != NULL) {
++        char type[16], name[64], old[128], replacement[320], multiply[128];
++        char *end = strchr(at, ';');
++        if (!end || sscanf(at,"noperspective out %15s %63[^;];",type,name)!=2) return false;
++        snprintf(old,sizeof(old),"noperspective in %s %s;",type,name);
++        char *input = strstr(fs,old);
++        if (!input) return false;
++        snprintf(replacement,sizeof(replacement),
++            "in %s mdkr_aff_%s;\n#define %s (mdkr_aff_%s * gl_FragCoord.w)\n",
++            type,name,name,name);
++        if (!splice(fs,fcap,input,strlen(old),replacement)) return false;
++        snprintf(replacement,sizeof(replacement),
++            "out %s mdkr_aff_%s;\n#define %s mdkr_aff_%s\n",type,name,name,name);
++        if (!splice(vs,vcap,at,(size_t)(end-at)+1,replacement)) return false;
++        // The generated vertex main is the final function in the source.
++        char *close = strrchr(vs,'}');
++        if (!close) return false;
++        snprintf(multiply,sizeof(multiply),"%s *= gl_Position.w;\n",name);
++        if (!splice(vs,vcap,close,0,multiply)) return false;
++    }
++    return true;
++}
+--- /dev/null
++++ b/platform/fast3d/gfx_gles_shader.h
+@@ -0,0 +1,7 @@
++#ifndef MDKR_GLES_SHADER_H
++#define MDKR_GLES_SHADER_H
++#include <stdbool.h>
++#include <stddef.h>
++/* Emulate affine varyings in GLES without an optional vendor extension. */
++bool mdkr_gles_affine_shader(char *vs, size_t vcap, char *fs, size_t fcap);
++#endif
+--- a/platform/fast3d/gfx_opengl.c
++++ b/platform/fast3d/gfx_opengl.c
+@@ -40,6 +40,7 @@
+ #include <SDL.h>
+ 
+ #include "gfx_cc.h"
++#include "gfx_gles_shader.h"
+ #include "gfx_mipgen.h"        /* mdkr64: g_pcMipmaps, g_gfxSamplerLod0Only */
+ #include "gfx_texture_edge.h"
+ #include "gfx_rendering_api.h"
+@@ -986,7 +987,7 @@
+     gfx_cc_get_features(shader_id0, shader_id1, &cc_features);
+ 
+     char vs_buf[12288];
+-    char fs_buf[18000];
++    char fs_buf[24000];
+     size_t vs_len = 0;
+     size_t fs_len = 0;
+     size_t num_floats = 4;
+@@ -1005,7 +1006,7 @@
+     /* Use GLSL 150 for macOS Core Profile, 320 es for GLES3, 330 elsewhere */
+ #ifdef MGB64_PORTMASTER_GLES
+     append_line(vs_buf, sizeof(vs_buf), &vs_len, "#version 320 es");
+-    append_line(vs_buf, sizeof(vs_buf), &vs_len, "precision mediump float;");
++    append_line(vs_buf, sizeof(vs_buf), &vs_len, "precision highp float;");
+ #elif defined(__APPLE__)
+     append_line(vs_buf, sizeof(vs_buf), &vs_len, "#version 150");
+ #else
+@@ -1133,7 +1134,9 @@
+     /* Fragment shader */
+ #ifdef MGB64_PORTMASTER_GLES
+     append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 320 es");
+-    append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision mediump float;");
++    append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision highp float;");
++    append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision highp int;");
++    append_line(fs_buf, sizeof(fs_buf), &fs_len, "precision highp sampler2DArrayShadow;");
+     append_line(fs_buf, sizeof(fs_buf), &fs_len, "out vec4 fragColor;");
+ #elif defined(__APPLE__)
+     append_line(fs_buf, sizeof(fs_buf), &fs_len, "#version 150");
+@@ -1378,12 +1381,12 @@
+         float mix = gfx_diag_alpha_from_tex_intensity_mix();
+         if (cc_features.used_textures[0]) {
+             fs_len += ge007_sprintf(fs_buf + fs_len,
+-                                     "texVal0.a = mix(texVal0.a, texVal0.r, %.9g);\n",
++                                     "texVal0.a = mix(texVal0.a, texVal0.r, float(%.9g));\n",
+                                      mix);
+         }
+         if (cc_features.used_textures[1]) {
+             fs_len += ge007_sprintf(fs_buf + fs_len,
+-                                     "texVal1.a = mix(texVal1.a, texVal1.r, %.9g);\n",
++                                     "texVal1.a = mix(texVal1.a, texVal1.r, float(%.9g));\n",
+                                      mix);
+         }
+     }
+@@ -1563,6 +1566,14 @@
+ 
+     vs_buf[vs_len] = '\0';
+     fs_buf[fs_len] = '\0';
++
++#ifdef MGB64_PORTMASTER_GLES
++    if (!mdkr_gles_affine_shader(vs_buf, sizeof(vs_buf), fs_buf, sizeof(fs_buf))) {
++        fprintf(stderr, "[GLES] Affine shader conversion overflow or invalid varying\n");
++        abort();
++    }
++    vs_len = strlen(vs_buf); fs_len = strlen(fs_buf);
++#endif
+ 
+     /* Dump first few generated shaders */
+     {
+@@ -3478,7 +3489,7 @@
+     static const char *vs_source =
+ #ifdef MGB64_PORTMASTER_GLES
+         "#version 320 es\n"
+-        "precision mediump float;\n"
++        "precision highp float;\n"
+ #else
+         "#version 330 core\n"
+ #endif
+@@ -3495,7 +3506,7 @@
+     static const char *fs_source =
+ #ifdef MGB64_PORTMASTER_GLES
+         "#version 320 es\n"
+-        "precision mediump float;\n"
++        "precision highp float;\n"
+ #else
+         "#version 330 core\n"
+ #endif
+@@ -4198,7 +4209,11 @@
+         glGetIntegerv(GL_MAJOR_VERSION, &major);
+         glGetIntegerv(GL_MINOR_VERSION, &minor);
+ 
++#ifdef MGB64_PORTMASTER_GLES
++        bool can_depth_clamp = SDL_GL_ExtensionSupported("GL_EXT_depth_clamp") == SDL_TRUE;
++#else
+         bool can_depth_clamp = (major > 3 || (major == 3 && minor >= 2));
++#endif
+ 
+         /* Allow override: GE007_NO_DEPTH_CLAMP=1 forces fallback z*=0.3 */
+         if (getenv("GE007_NO_DEPTH_CLAMP")) {
+@@ -4331,11 +4346,11 @@
+ #ifdef MGB64_PORTMASTER_GLES
+         static const char *vs =
+             "#version 320 es\n"
+-            "precision mediump float;\n"
++            "precision highp float;\n"
+             "in vec3 aShadowPos;\n"
+             "uniform mat4 uShadowMat;\n"
+             "void main() { gl_Position = uShadowMat * vec4(aShadowPos, 1.0); }\n";
+-        static const char *fs = "#version 320 es\nprecision mediump float;\nvoid main() {}\n";
++        static const char *fs = "#version 320 es\nprecision highp float;\nvoid main() {}\n";
+ #elif defined(__APPLE__)
+         static const char *vs =
+             "#version 150\n"
+@@ -4417,6 +4432,10 @@
+ #ifndef MGB64_PORTMASTER_GLES  /* depth-only FBO needs no explicit glDrawBuffer in GLES */
+         glDrawBuffer(GL_NONE);
+         glReadBuffer(GL_NONE);
++#else
++        const GLenum no_color = GL_NONE;
++        glDrawBuffers(1, &no_color);
++        glReadBuffer(GL_NONE);
+ #endif
+         GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+         glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prev_fbo);
+--- a/platform/fs_utf8.c
++++ b/platform/fs_utf8.c
+@@ -676,7 +676,7 @@
+ }
+ int mdkr_spawn_wait_utf8(const char *path, const char *const *arguments,
+                          int *exit_code) {
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(__ANDROID__)
+     (void)path;
+     (void)arguments;
+     if (exit_code != NULL) *exit_code = -1;
+--- a/platform/main_pc.c
++++ b/platform/main_pc.c
+@@ -18,7 +18,7 @@
+ #endif
+ #ifndef __EMSCRIPTEN__
+ #include <signal.h>
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__ANDROID__)
+ #include <execinfo.h>       /* backtrace() — glibc/macOS only; absent on wasm AND Windows */
+ #endif
+ #endif
+@@ -112,6 +112,7 @@
+  * when they vanish under lldb/ASan. Enabled unconditionally — cheap, and only
+  * fires on an actual fault. Native only: wasm has no execinfo/POSIX signals and
+  * a wasm trap surfaces in the browser's JS console instead (see the shell). */
++#ifndef __ANDROID__ /* Let Android debuggerd capture the native tombstone. */
+ static void mdkr_crash_handler(int sig) {
+     void *bt[40];
+ #ifdef _WIN32
+@@ -145,6 +146,7 @@
+     signal(sig, SIG_DFL);
+     raise(sig);
+ }
++#endif
+ #endif
+ 
+ /* Game boot chain (declared here to avoid pulling the full game headers). */
+@@ -220,7 +222,7 @@
+  * pre-shell binary. Without MDKR_APP (the wasm build, and -DMDKR_APP=OFF) this
+  * is still main() and nothing about the engine's startup differs.
+  */
+-#ifdef MDKR_APP
++#if defined(MDKR_APP) || defined(__ANDROID__)
+ int mdkr64_headless_main(int argc, char **argv);
+ int mdkr64_headless_main(int argc, char **argv) {
+ #else
+@@ -240,7 +242,7 @@
+     SDL_SetMainReady();
+     setvbuf(stdout, NULL, _IOLBF, 0);
+     setvbuf(stderr, NULL, _IOLBF, 0);
+-#ifndef __EMSCRIPTEN__
++#if !defined(__EMSCRIPTEN__) && !defined(__ANDROID__)
+     if (!getenv("MDKR_NO_CRASH_HANDLER")) {
+         signal(SIGSEGV, mdkr_crash_handler);
+ #ifdef SIGBUS
+--- a/platform/platform_sdl_min.c
++++ b/platform/platform_sdl_min.c
+@@ -47,7 +47,12 @@
+ #endif
+ #include <windows.h>
+ #endif
+-#include <glad/glad.h>          /* GL loader — desktop only; web is WebGPU-only */
++#ifdef __ANDROID__
++#include <GLES3/gl32.h>
++#include "android/android_bridge.h"
++#else
++#include <glad/glad.h>
++#endif
+ #include <SDL_syswm.h>
+ #else
+ #include <emscripten/emscripten.h>
+@@ -810,6 +815,7 @@
+         return; /* FIFO swap itself is the queue bound. */
+     }
+ 
++    #ifndef __ANDROID__ /* ES 3.2 functions link directly to libGLESv3. */
+     if (glFenceSync == NULL || glClientWaitSync == NULL ||
+         glDeleteSync == NULL) {
+         /* A 3.3 core context should always expose sync objects. glFinish is a
+@@ -821,6 +827,7 @@
+         s_glBackpressureFailures++;
+         return;
+     }
++    #endif
+     while (s_glFencesInFlight > 0u &&
+            sdl_gl_retire_oldest(false)) {
+         /* Retire every completion already observable without blocking. */
+@@ -916,9 +923,15 @@
+ }
+ 
+ static int sdl_init_gl(Uint32 base_flags) {
++#ifdef __ANDROID__
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
++    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
++#else
+     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
++#endif
+     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+ 
+@@ -939,6 +952,7 @@
+         g_sdlWindow = NULL;
+         return -1;
+     }
++    #ifndef __ANDROID__
+     if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress)) {
+         fprintf(stderr, "[SDL] glad load failed\n");
+         SDL_GL_DeleteContext(s_glctx);
+@@ -948,6 +962,7 @@
+         g_sdlWindow = NULL;
+         return -1;
+     }
++    #endif
+     sdl_apply_gl_present_policy();
+     s_glReady = 1;
+     printf("[SDL] GL ready: %s / %s\n",
+@@ -3277,6 +3292,17 @@
+             live.stick_x = 0;
+             live.stick_y = 0;
+         }
++#ifdef __ANDROID__
++        if (port == 0 && !s_gameInputSuppressed) {
++            uint16_t buttons; int8_t x, y;
++            mdkr_android_read_touch(&buttons, &x, &y);
++            if (buttons || x || y) {
++                kind = MDKR_PAD_LOCAL_TOUCH;
++                live.buttons = buttons; live.stick_x = x; live.stick_y = y;
++                live.present = 1;
++            }
++        }
++#endif
+         source.buttons = (uint16_t)live.buttons;
+         source.stick_x = (int8_t)live.stick_x;
+         source.stick_y = (int8_t)live.stick_y;
+--- a/platform/stubs_dkr.c
++++ b/platform/stubs_dkr.c
+@@ -348,7 +348,7 @@
+      * _aligned_free — see dkr_arena_shutdown. */
+     p = _aligned_malloc(size, align);
+ #else
+-#if defined(_ISOC11_SOURCE) || __STDC_VERSION__ >= 201112L
++#if !defined(__ANDROID__) && (defined(_ISOC11_SOURCE) || __STDC_VERSION__ >= 201112L)
+     /* aligned_alloc requires size to be a multiple of alignment; only use it when
+      * align == size (native). Otherwise (web, align > size) use posix_memalign. */
+     if (align == (uintptr_t)size) {
+--- /dev/null
++++ b/tests/check_android_gles_driver.py
+@@ -0,0 +1,111 @@
++#!/usr/bin/env python3
++"""ROM-free shader compile/link regression on Linux Mesa EGL ES 3.2.
++Needs cc, libEGL/Mesa, prepared SDL2 sources, and ANDROID_NDK_HOME.
++Builds a host harness from the real generator, not a copied shader template.
++"""
++import ctypes as c
++import os
++import pathlib
++import shutil
++import subprocess
++import tempfile
++
++root = pathlib.Path(__file__).resolve().parents[1]
++ndk = pathlib.Path(os.environ['ANDROID_NDK_HOME'])
++workspace = tempfile.TemporaryDirectory(prefix='goldenballoon-gles-')
++work = pathlib.Path(workspace.name)
++pair_dir = work/'shaders'
++pair_dir.mkdir()
++headers = ndk/'toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include'
++for name in ('GLES3', 'KHR'):
++    shutil.copytree(headers/name, work/'headers'/name)
++source = (root/'platform/fast3d/gfx_opengl.c').read_text()
++prefix = source[:source.index('    /* Dump first few generated shaders */')]
++# Close the real combiner generator after source generation, before GL upload.
++body = r"""
++    char path[4096];
++    snprintf(path,sizeof(path),"%s/%u.vert",test_output,shader_id1);
++    FILE *v=fopen(path,"w");if(!v) abort(); fputs(vs_buf,v);fclose(v);
++    snprintf(path,sizeof(path),"%s/%u.frag",test_output,shader_id1);
++    FILE *f=fopen(path,"w");if(!f) abort(); fputs(fs_buf,f);fclose(f);
++    return NULL;
++}
++int g_diag_verbose=0;
++bool g_depth_clamp_enabled=false;
++"""
++filter_start = source.index('    static const char *vs_source =', source.index('static bool gfx_opengl_ensure_output_filter_program(void)'))
++filter_end = source.index('    if (g_output_filter_program == 0)', filter_start)
++filters = '\nstatic void test_filters(void) {\n'+source[filter_start:filter_end]+r"""
++    char path[4096];
++    snprintf(path,sizeof(path),"%s/output.vert",test_output);
++    FILE *v=fopen(path,"w");if(!v) abort();fputs(vs_source,v);fclose(v);
++    snprintf(path,sizeof(path),"%s/output.frag",test_output);
++    FILE *f=fopen(path,"w");if(!f) abort();fputs(fs_source,f);fclose(f);
++}
++"""
++shadow_start = source.index('        static const char *vs =', source.index('if (g_shadow_program == 0)'))
++shadow_end = source.index('#elif defined(__APPLE__)',shadow_start)
++shadows = '\nstatic void test_shadows(void) {\n'+source[shadow_start:shadow_end]+r"""
++    char path[4096];
++    snprintf(path,sizeof(path),"%s/shadow.vert",test_output);
++    FILE *v=fopen(path,"w");if(!v) abort();fputs(vs,v);fclose(v);
++    snprintf(path,sizeof(path),"%s/shadow.frag",test_output);
++    FILE *f=fopen(path,"w");if(!f) abort();fputs(fs,f);fclose(f);
++}
++"""
++main = r"""
++int main(int argc, char **argv) {
++    if(argc!=2) return 2;
++    test_output=argv[1];
++    uint32_t flags[]={0,1,3,7,9,15,0xF001,0xF003,0xF00F,0xFF0F,0xF0FF,0xFFFFFFFF};
++    for(size_t i=0;i<sizeof(flags)/sizeof(flags[0]);i++)
++        gfx_opengl_create_and_load_new_shader(flags[i]==0xFFFFFFFF ? 0x0001000800010008ULL : 0x012A0128012A0128ULL,flags[i]);
++    test_filters();test_shadows();return 0;
++}
++"""
++harness=work/'harness.c'
++harness.write_text('static const char *test_output;\n'+prefix+body+filters+shadows+main)
++command=['cc','-w','-std=gnu11','-DNATIVE_PORT=1','-DMGB64_PORTMASTER_GLES=1','-DF3DDKR_GBI','-DMODERN_CC','-DSDL_MAIN_HANDLED','-ffunction-sections','-fdata-sections','-I'+str(work/'headers')]
++for p in ('platform','platform/fast3d','platform/fast3d_shim','game/include','game','third_party/SDL2/include'):
++    command.append('-I'+str(root/p))
++command += [str(harness),str(root/'platform/fast3d/gfx_cc.c'),str(root/'platform/fast3d/gfx_gles_shader.c'),str(root/'platform/platform_stdio.c'),'-Wl,--gc-sections','-lm','-o',str(work/'harness')]
++subprocess.run(command,check=True)
++subprocess.run([str(work/'harness'),str(pair_dir)],check=True)
++os.environ['EGL_PLATFORM']='surfaceless'
++e=c.CDLL('libEGL.so.1');ptr=c.c_void_p;I=c.c_int;U=c.c_uint
++def f(n,rest,args):
++ v=getattr(e,n);v.restype=rest;v.argtypes=args;return v
++get=f('eglGetDisplay',ptr,[ptr]);init=f('eglInitialize',U,[ptr,c.POINTER(I),c.POINTER(I)])
++d=get(None);a=I();b=I();assert init(d,c.byref(a),c.byref(b))
++assert f('eglBindAPI',U,[U])(0x30A0)
++attrs=(I*13)(0x3033,1,0x3040,0x40,0x3024,8,0x3023,8,0x3022,8,0x3021,8,0x3038)
++conf=ptr();n=I();assert f('eglChooseConfig',U,[ptr,c.POINTER(I),c.POINTER(ptr),I,c.POINTER(I)])(d,attrs,c.byref(conf),1,c.byref(n)) and n.value
++surf=f('eglCreatePbufferSurface',ptr,[ptr,ptr,c.POINTER(I)])(d,conf,(I*5)(0x3057,16,0x3056,16,0x3038))
++ctx=f('eglCreateContext',ptr,[ptr,ptr,ptr,c.POINTER(I)])(d,conf,None,(I*5)(0x3098,3,0x30fb,2,0x3038))
++assert ctx and f('eglMakeCurrent',U,[ptr,ptr,ptr,ptr])(d,surf,surf,ctx)
++addr=f('eglGetProcAddress',ptr,[c.c_char_p])
++def gl(name,ret,args):return c.CFUNCTYPE(ret,*args)(addr(name.encode()))
++print(gl('glGetString',c.c_char_p,[U])(0x1f02).decode())
++create=gl('glCreateShader',U,[U]);source=gl('glShaderSource',None,[U,I,c.POINTER(c.c_char_p),ptr]);compile=gl('glCompileShader',None,[U]);getiv=gl('glGetShaderiv',None,[U,U,c.POINTER(I)]);getlog=gl('glGetShaderInfoLog',None,[U,I,ptr,c.c_char_p]);delete=gl('glDeleteShader',None,[U])
++cp=gl('glCreateProgram',U,[]);attach=gl('glAttachShader',None,[U,U]);link=gl('glLinkProgram',None,[U]);gp=gl('glGetProgramiv',None,[U,U,c.POINTER(I)]);pl=gl('glGetProgramInfoLog',None,[U,I,ptr,c.c_char_p]);dp=gl('glDeleteProgram',None,[U])
++failed=0
++for v in sorted(pair_dir.glob('*.vert')):
++ ids=[];ok=True
++ for p,typ in [(v,0x8b31),(v.with_suffix('.frag'),0x8b30)]:
++  sh=create(typ);ids.append(sh);s=c.c_char_p(p.read_bytes());source(sh,1,c.byref(s),None);compile(sh);status=I();getiv(sh,0x8b81,c.byref(status))
++  if not status.value:
++   log=c.create_string_buffer(8192);getlog(sh,8192,None,log);print('FAIL',p.name,log.value.decode());ok=False
++ if ok:
++  prog=cp()
++  for sh in ids: attach(prog,sh)
++  link(prog);status=I();gp(prog,0x8b82,c.byref(status))
++  if not status.value:
++   log=c.create_string_buffer(8192);pl(prog,8192,None,log);print('LINK FAIL',v.name,log.value.decode());ok=False
++  dp(prog)
++ for sh in ids:delete(sh)
++ if ok:print('PASS',v.stem)
++ else:failed+=1
++assert not failed,f'{failed} failing shader pairs'
++
++print("PASS: 14 generated shader pairs compiled and linked on the GLES driver.")
++workspace.cleanup()
+--- /dev/null
++++ b/tests/test_android_gles_shader.c
+@@ -0,0 +1,26 @@
++#include "gfx_gles_shader.h"
++#include <assert.h>
++#include <string.h>
++#include <stdio.h>
++int main(void) {
++    char vs[2048]="#version 320 es\nnoperspective out vec4 vInput1;\nnoperspective out vec2 vTexCoord0;\nvoid main(){vInput1=a; vTexCoord0=b; gl_Position=p;}\n";
++    char fs[2048]="#version 320 es\nnoperspective in vec4 vInput1;\nnoperspective in vec2 vTexCoord0;\nvoid main(){f=vInput1;}\n";
++    assert(mdkr_gles_affine_shader(vs,sizeof(vs),fs,sizeof(fs)));
++    assert(!strstr(vs,"noperspective") && !strstr(fs,"noperspective"));
++    assert(strstr(vs,"vInput1 *= gl_Position.w;") && strstr(vs,"vTexCoord0 *= gl_Position.w;"));
++    assert(strstr(fs,"#define vInput1 (mdkr_aff_vInput1 * gl_FragCoord.w)"));
++    assert(strstr(vs,"out vec4 mdkr_aff_vInput1;"));
++    assert(strstr(fs,"in vec4 mdkr_aff_vInput1;"));
++    char badvs[80]="noperspective out vec4 v;void main(){}", badfs[80]="void main(){}";
++    assert(!mdkr_gles_affine_shader(badvs,sizeof(badvs),badfs,sizeof(badfs)));
++    char smallvs[80]="noperspective out vec4 v;void main(){}", smallfs[40]="noperspective in vec4 v;";
++    assert(!mdkr_gles_affine_shader(smallvs,sizeof(smallvs),smallfs,sizeof(smallfs)));
++    /* Perspective interpolation of attr*w, multiplied by interpolated 1/w,
++       must equal affine interpolation even when clip-space depths differ. */
++    double b[]={.2,.3,.5}, w[]={1,2,5}, a[]={.1,.9,.4};
++    double numerator=0,denominator=0,expected=0;
++    for(int i=0;i<3;i++){ numerator+=b[i]*(a[i]*w[i])/w[i]; denominator+=b[i]/w[i]; expected+=b[i]*a[i]; }
++    double delta=numerator/denominator*denominator-expected;
++    assert(delta<1e-12 && delta>-1e-12);
++    puts("GLES affine shader tests passed");
++}
+--- /dev/null
++++ b/tools/android/Dockerfile
+@@ -0,0 +1,7 @@
++FROM ubuntu:24.04
++RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
++    openjdk-17-jdk-headless python3 ca-certificates unzip libc6 libstdc++6 && \
++    rm -rf /var/lib/apt/lists/*
++ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
++WORKDIR /project
++CMD ["python3", "tools/android/build.py", "--sdk-only", "--install-sdk"]
+--- /dev/null
++++ b/tools/android/build.py
+@@ -0,0 +1,143 @@
++#!/usr/bin/env python3
++"""Pinned Android ARM64 build. Python 3.10+, JDK 17, Android SDK, internet on first run."""
++import argparse
++import hashlib
++import os
++from pathlib import Path
++import platform
++import shutil
++import subprocess
++import sys
++import tarfile
++import urllib.request
++import zipfile
++
++ROOT = Path(__file__).resolve().parents[2]
++CACHE = ROOT / 'third_party' / 'archives'
++TOOLS = Path(os.environ.get('GB_BUILD_TOOLS', str(ROOT / '.build-tools'))).resolve()
++SDL_VERSION = '2.32.8'
++GRADLE_VERSION = '8.9'
++NDK = '28.2.13676358'
++HB = '36cb489cb02ce4b92099669ba9f9bea348eff93f'
++SB = 'cfe430e7375a7845b679adae9d51dac6deaa8858'
++DEPENDENCIES = [
++    (f'SDL2-{SDL_VERSION}.tar.gz', f'https://www.libsdl.org/release/SDL2-{SDL_VERSION}.tar.gz', '0ca83e9c9b31e18288c7ec811108e58bac1f1bb5ec6577ad386830eac51c787e'),
++    (f'harfbuzz-{HB}.tar.gz', f'https://github.com/harfbuzz/harfbuzz/archive/{HB}.tar.gz', '0afa12c8ef4bc4ffebd99e5d2a4a2c56dfe329c661feda08a9bc878b7352be89'),
++    (f'sheenbidi-{SB}.tar.gz', f'https://github.com/Tehreer/SheenBidi/archive/{SB}.tar.gz', '9546f423820d4618c704a30c51c191b0b002aa79100e0ec34cb2cf461fd6353e'),
++]
++
++def sha(path):
++    h = hashlib.sha256()
++    with path.open('rb') as f:
++        for b in iter(lambda: f.read(1024*1024), b''): h.update(b)
++    return h.hexdigest()
++
++def download(name, url, digest, directory=CACHE):
++    directory.mkdir(parents=True, exist_ok=True)
++    dest = directory / name
++    if dest.exists() and sha(dest) == digest: return dest
++    tmp = dest.with_suffix(dest.suffix+'.partial')
++    print('Downloading', name, flush=True)
++    try:
++        with urllib.request.urlopen(url, timeout=120) as src, tmp.open('wb') as out:
++            shutil.copyfileobj(src, out)
++        if sha(tmp) != digest: raise RuntimeError(f'SHA-256 mismatch: {name}')
++        tmp.replace(dest)
++    finally:
++        tmp.unlink(missing_ok=True)
++    return dest
++
++def unpack_zip(archive, directory):
++    with zipfile.ZipFile(archive) as z:
++        for info in z.infolist():
++            path = Path(info.filename)
++            if path.is_absolute() or '..' in path.parts: raise RuntimeError('Unsafe archive path')
++        z.extractall(directory)
++        if os.name != 'nt':
++            for info in z.infolist():
++                p = directory/info.filename
++                mode = info.external_attr >> 16
++                if p.is_file() and mode & 0o111: p.chmod(0o755)
++
++def prepare():
++    for spec in DEPENDENCIES: download(*spec)
++    sdl = ROOT/'third_party'/'SDL2'
++    if not (sdl/'CMakeLists.txt').is_file():
++        with tarfile.open(CACHE/DEPENDENCIES[0][0]) as t:
++            for member in t.getmembers():
++                p = Path(member.name)
++                if p.is_absolute() or '..' in p.parts or member.issym() or member.islnk():
++                    raise RuntimeError('Unsafe SDL archive member')
++            t.extractall(sdl.parent)
++        (sdl.parent/f'SDL2-{SDL_VERSION}').rename(sdl)
++    print('SDL2, HarfBuzz and SheenBidi ready (verified SHA-256).', flush=True)
++
++def run(args, **kw):
++    print('+', ' '.join(map(str,args)), flush=True)
++    subprocess.run(list(map(str,args)), check=True, **kw)
++
++def gradle():
++    executable = TOOLS/f'gradle-{GRADLE_VERSION}'/'bin'/('gradle.bat' if os.name=='nt' else 'gradle')
++    if not executable.exists():
++        arc=download(f'gradle-{GRADLE_VERSION}-bin.zip',f'https://services.gradle.org/distributions/gradle-{GRADLE_VERSION}-bin.zip','d725d707bfabd4dfdc958c624003b3c80accc03f7037b5122c4b1d0ef15cecab',TOOLS)
++        unpack_zip(arc,TOOLS)
++    if os.name!='nt': executable.chmod(0o755)
++    return executable
++
++def sdk_install(sdk):
++    if platform.system()!='Linux' or platform.machine() not in ('x86_64','AMD64'):
++        raise RuntimeError('--install-sdk supports Linux x86_64 (Colab/WSL/Docker). On Windows/macOS install pinned SDK packages with Android Studio.')
++    manager=sdk/'cmdline-tools/latest/bin/sdkmanager'
++    if not manager.exists():
++        arc=download('commandlinetools-linux-11076708_latest.zip','https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip','2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258',TOOLS)
++        parent=sdk/'cmdline-tools'; parent.mkdir(parents=True,exist_ok=True)
++        unpack_zip(arc,parent); (parent/'cmdline-tools').rename(parent/'latest')
++        for f in (parent/'latest/bin').iterdir(): f.chmod(0o755)
++    # --install-sdk explicitly requests installation and acceptance of SDK licenses.
++    run([manager, f'--sdk_root={sdk}', '--licenses'],input='y\n'*100,text=True)
++    run([manager, f'--sdk_root={sdk}',f'ndk;{NDK}','platforms;android-35','build-tools;35.0.0','cmake;3.22.1'],input='y\n'*100,text=True)
++
++def main():
++    parser=argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--prepare',action='store_true',help='Only unpack and verify source dependencies')
++    parser.add_argument('--install-sdk',action='store_true',help='Install pinned Linux SDK/NDK and accept Android SDK licenses')
++    parser.add_argument('--sdk-only',action='store_true',help='Build entirely with SDK/NDK tools, without Gradle or Maven')
++    parser.add_argument('--native-build-dir',type=Path,help='Existing CMake tree for --sdk-only')
++    parser.add_argument('--release',action='store_true',help='Build unsigned release APK (debug is installable by default)')
++    parser.add_argument('--jobs',type=int,default=2)
++    parser.add_argument('--sdk',type=Path)
++    parser.add_argument('--offline',action='store_true',help='Gradle offline; requires complete prior Gradle/SDK caches')
++    args=parser.parse_args()
++    if args.jobs<1: parser.error('--jobs must be positive')
++    prepare()
++    if args.prepare: return
++    if not os.environ.get('JAVA_HOME') and not shutil.which('java'):
++        raise RuntimeError('JDK 17 required. Set JAVA_HOME to your JDK 17 directory.')
++    sdk=(args.sdk or Path(os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT') or TOOLS/'android-sdk')).resolve()
++    if args.install_sdk: sdk_install(sdk)
++    required=[sdk/'ndk'/NDK/'build/cmake/android.toolchain.cmake',sdk/'platforms/android-35/android.jar',sdk/'build-tools/35.0.0',sdk/'cmake/3.22.1']
++    if not all(p.exists() for p in required):
++        raise RuntimeError('SDK packages missing. Use --install-sdk on Linux, or install NDK 28.2.13676358, API 35, build-tools 35.0.0, CMake 3.22.1 through Android Studio.')
++    if args.sdk_only:
++        from package_sdk import build_sdk
++        build_sdk(sdk,args.jobs,args.release,args.native_build_dir)
++        return
++    env=dict(os.environ,ANDROID_HOME=str(sdk),ANDROID_SDK_ROOT=str(sdk),MDKR_CHARACTER_TEXT_DEP_CACHE=str(CACHE),CMAKE_BUILD_PARALLEL_LEVEL=str(args.jobs))
++    # java.util.Properties uses backslash escapes even on Windows.
++    sdk_value=str(sdk).replace('\\','/').replace(':','\\:')
++    (ROOT/'android/local.properties').write_text('sdk.dir='+sdk_value+'\n')
++    cmd=[gradle(),'-p',ROOT/'android','--no-daemon','--console=plain',f'--max-workers={args.jobs}',':app:assembleRelease' if args.release else ':app:assembleDebug']
++    if args.offline: cmd.append('--offline')
++    run(cmd,env=env,cwd=ROOT)
++    variant='release' if args.release else 'debug'
++    name='app-release-unsigned.apk' if args.release else 'app-debug.apk'
++    apk=ROOT/f'android/app/build/outputs/apk/{variant}/{name}'
++    out=ROOT/'out';out.mkdir(exist_ok=True)
++    target=out/f'GoldenBalloon-arm64-{variant}.apk';shutil.copy2(apk,target)
++    run([sys.executable,ROOT/'tools/android/verify_apk.py',target])
++    print('\nAPK:',target,'\nSHA256:',sha(target))
++
++if __name__=='__main__':
++    try: main()
++    except (RuntimeError,subprocess.CalledProcessError,OSError) as ex:
++        print('\nBUILD FAILED:',ex,file=sys.stderr);sys.exit(1)
+--- /dev/null
++++ b/tools/android/package_sdk.py
+@@ -0,0 +1,85 @@
++#!/usr/bin/env python3
++"""SDK-only packaging: CMake -> javac -> D8 -> aapt2 -> zipalign -> apksigner.
++No Gradle/Maven required. Imported by build.py --sdk-only.
++"""
++import os
++from pathlib import Path
++import platform
++import shutil
++import zipfile
++import xml.etree.ElementTree as ET
++
++from build import ROOT, NDK, TOOLS, run
++from verify_apk import verify
++
++def build_sdk(sdk, jobs=2, release=False, native_dir=None):
++    windows=os.name=='nt'
++    host={'Linux':'linux-x86_64','Darwin':'darwin-x86_64','Windows':'windows-x86_64'}[platform.system()]
++    suffix='.exe' if windows else ''
++    build_tools=sdk/'build-tools/35.0.0'
++    java_home=os.environ.get('JAVA_HOME')
++    def java_tool(name):
++        return Path(java_home)/'bin'/(name+suffix) if java_home else name
++    ndk=sdk/'ndk'/NDK
++    llvm=ndk/'toolchains/llvm/prebuilt'/host
++    cmake=sdk/'cmake/3.22.1/bin'/('cmake'+suffix)
++    ninja=sdk/'cmake/3.22.1/bin'/('ninja'+suffix)
++    work=ROOT/'out/sdk-package';work.mkdir(parents=True,exist_ok=True)
++    native=Path(native_dir).resolve() if native_dir else ROOT/'out/native-arm64'
++    run([cmake,'-S',ROOT,'-B',native,'-G','Ninja',f'-DCMAKE_MAKE_PROGRAM={ninja}',f'-DCMAKE_TOOLCHAIN_FILE={ndk}/build/cmake/android.toolchain.cmake','-DANDROID_ABI=arm64-v8a','-DANDROID_PLATFORM=android-26','-DANDROID_STL=c++_shared','-DCMAKE_BUILD_TYPE=RelWithDebInfo'])
++    run([cmake,'--build',native,'--target','mdkr64','-j',jobs])
++    app=ROOT/'android/app/src/main'
++    android_jar=sdk/'platforms/android-35/android.jar'
++    ns='http://schemas.android.com/apk/res/android';ET.register_namespace('android',ns)
++    manifest=ET.parse(app/'AndroidManifest.xml');root=manifest.getroot()
++    root.set('package','org.goldenballoon.mobile')
++    root.set('{'+ns+'}versionCode','1');root.set('{'+ns+'}versionName','1.7.0-arm64.1')
++    application=root.find('application')
++    application.set('{'+ns+'}debuggable','false' if release else 'true')
++    application.set('{'+ns+'}extractNativeLibs','false')
++    application.find('provider').set('{'+ns+'}authorities','org.goldenballoon.mobile.files')
++    manifest.write(work/'AndroidManifest.xml',encoding='utf-8',xml_declaration=True)
++    resources=work/'resources.zip'
++    run([build_tools/('aapt2'+suffix),'compile','--dir',app/'res','-o',resources])
++    gen=work/'generated';gen.mkdir(exist_ok=True)
++    unsigned=work/'unsigned.apk'
++    run([build_tools/('aapt2'+suffix),'link','-I',android_jar,'--manifest',work/'AndroidManifest.xml','--min-sdk-version','26','--target-sdk-version','35','--java',gen,'-o',unsigned,resources])
++    classes=work/'classes'
++    if classes.exists(): shutil.rmtree(classes)
++    classes.mkdir()
++    sources=list((app/'java').rglob('*.java'))+list((ROOT/'third_party/SDL2/android-project/app/src/main/java').rglob('*.java'))+list(gen.rglob('*.java'))
++    source_list=work/'sources.txt'
++    source_list.write_text('\n'.join('"'+str(p).replace('\\','/')+'"' for p in sources))
++    run([java_tool('java'),'-m','jdk.compiler/com.sun.tools.javac.Main','-encoding','UTF-8','--release','8','-classpath',android_jar,'-d',classes,'@'+str(source_list)])
++    jar=work/'classes.jar'
++    with zipfile.ZipFile(jar,'w',zipfile.ZIP_DEFLATED) as z:
++        for f in sorted(classes.rglob('*.class')): z.write(f,f.relative_to(classes).as_posix())
++    dex=work/'dex';dex.mkdir(exist_ok=True)
++    for f in dex.glob('*.dex'): f.unlink()
++    # Call D8's Java entry directly, including on Windows (no .bat quoting).
++    run([java_tool('java'),'-cp',build_tools/'lib/d8.jar','com.android.tools.r8.D8','--min-api','26','--lib',android_jar,'--output',dex,jar])
++    libdir=work/'lib';libdir.mkdir(exist_ok=True)
++    sources=[native/'libmain.so',native/'sdl2/libSDL2.so',llvm/'sysroot/usr/lib/aarch64-linux-android/libc++_shared.so']
++    symbols=ROOT/'out/GoldenBalloon-arm64-symbols.zip'
++    with zipfile.ZipFile(symbols,'w',zipfile.ZIP_DEFLATED) as z:
++        for src in sources[:2]: z.write(src,src.name)
++    with zipfile.ZipFile(unsigned,'a') as z:
++        for f in sorted(dex.glob('*.dex')): z.write(f,f.name,compress_type=zipfile.ZIP_DEFLATED)
++        for src in sources:
++            copy=libdir/src.name;shutil.copy2(src,copy)
++            run([llvm/'bin'/('llvm-strip'+suffix),'--strip-unneeded',copy])
++            z.write(copy,'lib/arm64-v8a/'+copy.name,compress_type=zipfile.ZIP_STORED)
++    aligned=work/'aligned.apk'
++    run([build_tools/('zipalign'+suffix),'-P','16','-f','4',unsigned,aligned])
++    out=ROOT/'out'/('GoldenBalloon-arm64-release-unsigned.apk' if release else 'GoldenBalloon-arm64-debug.apk')
++    if release: shutil.copy2(aligned,out)
++    else:
++        # Stable local debug key across builds, never bundled in the source ZIP.
++        key=TOOLS/'goldenballoon-debug.keystore';key.parent.mkdir(parents=True,exist_ok=True)
++        if not key.exists():
++            run([java_tool('keytool'),'-genkeypair','-keystore',key,'-alias','androiddebugkey','-storepass','android','-keypass','android','-keyalg','RSA','-keysize','2048','-validity','10000','-dname','CN=Android Debug,O=Android,C=US'])
++        run([java_tool('java'),'-jar',build_tools/'lib/apksigner.jar','sign','--ks',key,'--ks-key-alias','androiddebugkey','--ks-pass','pass:android','--key-pass','pass:android','--out',out,aligned])
++        run([java_tool('java'),'-jar',build_tools/'lib/apksigner.jar','verify','--verbose',out])
++    run([build_tools/('zipalign'+suffix),'-c','-P','16','4',out])
++    verify(out)
++    print('APK:',out,'\nNative symbols:',symbols)
+--- /dev/null
++++ b/tools/android/verify_apk.py
+@@ -0,0 +1,24 @@
++#!/usr/bin/env python3
++"""Fail if the APK lacks required ARM64 ELFs or uses <16 KiB LOAD alignment."""
++import struct
++import sys
++import zipfile
++
++def verify(path):
++    with zipfile.ZipFile(path) as z:
++        libs=[n for n in z.namelist() if n.startswith('lib/') and n.endswith('.so')]
++        expected={'lib/arm64-v8a/libmain.so','lib/arm64-v8a/libSDL2.so','lib/arm64-v8a/libc++_shared.so'}
++        if not expected.issubset(libs): raise ValueError(f'Missing libraries: {expected-set(libs)}')
++        for name in libs:
++            if not name.startswith('lib/arm64-v8a/'): raise ValueError('Unexpected ABI: '+name)
++            data=z.read(name)
++            if data[:6]!=b'\x7fELF\x02\x01': raise ValueError('Not ELF64 little endian: '+name)
++            if struct.unpack_from('<H',data,18)[0]!=183: raise ValueError('Not AArch64: '+name)
++            off=struct.unpack_from('<Q',data,32)[0]
++            size,count=struct.unpack_from('<HH',data,54)
++            for i in range(count):
++                header=struct.unpack_from('<IIQQQQQQ',data,off+i*size)
++                if header[0]==1 and header[7]<16384: raise ValueError('LOAD alignment <16KiB: '+name)
++            print('PASS ARM64 / 16KiB ELF:',name)
++    print('APK structural verification passed; device execution is a separate check.')
++if __name__=='__main__': verify(sys.argv[1])
+--- /dev/null
++++ b/validation/gles-driver.log
+@@ -0,0 +1,19 @@
++[fast3d] DIAG SETTEX CC COLOR SCALE value=1.020000 (GE007_DIAG_SETTEX_CC_COLOR_SCALE_VALUE)
++[fast3d] DIAG SETTEX CC ALPHA SCALE value=1.000000 (GE007_DIAG_SETTEX_CC_ALPHA_SCALE_VALUE)
++[fast3d] DIAG XLU COVERAGE WRAP THIN rate=0.250000 (GE007_DIAG_XLU_COVERAGE_WRAP_THIN_RATE)
++OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.2
++PASS 0
++PASS 1
++PASS 15
++PASS 3
++PASS 4294967295
++PASS 61441
++PASS 61443
++PASS 61455
++PASS 61695
++PASS 65295
++PASS 7
++PASS 9
++PASS output
++PASS shadow
++PASS: 14 generated shader pairs compiled and linked on the GLES driver.
+--- /dev/null
++++ b/validation/gradle-build.log
+@@ -0,0 +1,48 @@
++To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.9/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
++Daemon will be stopped at the end of the build 
++> Task :app:preBuild UP-TO-DATE
++> Task :app:preDebugBuild UP-TO-DATE
++> Task :app:mergeDebugNativeDebugMetadata NO-SOURCE
++> Task :app:javaPreCompileDebug UP-TO-DATE
++> Task :app:checkDebugAarMetadata UP-TO-DATE
++> Task :app:generateDebugResValues UP-TO-DATE
++> Task :app:mapDebugSourceSetPaths UP-TO-DATE
++> Task :app:generateDebugResources UP-TO-DATE
++> Task :app:mergeDebugResources UP-TO-DATE
++> Task :app:packageDebugResources UP-TO-DATE
++> Task :app:parseDebugLocalResources UP-TO-DATE
++> Task :app:createDebugCompatibleScreenManifests UP-TO-DATE
++> Task :app:extractDeepLinksDebug UP-TO-DATE
++> Task :app:processDebugMainManifest UP-TO-DATE
++> Task :app:processDebugManifest UP-TO-DATE
++> Task :app:processDebugManifestForPackage UP-TO-DATE
++> Task :app:processDebugResources UP-TO-DATE
++> Task :app:compileDebugJavaWithJavac UP-TO-DATE
++> Task :app:mergeDebugShaders UP-TO-DATE
++> Task :app:compileDebugShaders NO-SOURCE
++> Task :app:generateDebugAssets UP-TO-DATE
++> Task :app:mergeDebugAssets UP-TO-DATE
++> Task :app:compressDebugAssets UP-TO-DATE
++> Task :app:processDebugJavaRes NO-SOURCE
++> Task :app:mergeDebugJavaResource UP-TO-DATE
++> Task :app:checkDebugDuplicateClasses UP-TO-DATE
++> Task :app:desugarDebugFileDependencies UP-TO-DATE
++> Task :app:mergeExtDexDebug UP-TO-DATE
++> Task :app:mergeLibDexDebug UP-TO-DATE
++> Task :app:dexBuilderDebug UP-TO-DATE
++> Task :app:mergeProjectDexDebug UP-TO-DATE
++> Task :app:preReleaseBuild UP-TO-DATE
++> Task :app:configureCMakeRelWithDebInfo[arm64-v8a]
++> Task :app:buildCMakeRelWithDebInfo[arm64-v8a][mdkr64]
++> Task :app:mergeDebugJniLibFolders UP-TO-DATE
++> Task :app:validateSigningDebug UP-TO-DATE
++> Task :app:writeDebugAppMetadata UP-TO-DATE
++> Task :app:writeDebugSigningConfigVersions UP-TO-DATE
++> Task :app:mergeDebugNativeLibs
++> Task :app:stripDebugDebugSymbols
++> Task :app:packageDebug
++> Task :app:createDebugApkListingFileRedirect UP-TO-DATE
++> Task :app:assembleDebug
++
++BUILD SUCCESSFUL in 9s
++35 actionable tasks: 5 executed, 30 up-to-date
+--- /dev/null
++++ b/validation/sdk-direct-build.log
+@@ -0,0 +1,179 @@
++SDL2, HarfBuzz and SheenBidi ready (verified SHA-256).
+++ <ANDROID_SDK>/cmake/3.22.1/bin/cmake -S <PROJECT> -B <PROJECT>/build-android-check -G Ninja -DCMAKE_MAKE_PROGRAM=<ANDROID_SDK>/cmake/3.22.1/bin/ninja -DCMAKE_TOOLCHAIN_FILE=<ANDROID_SDK>/ndk/28.2.13676358/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=RelWithDebInfo
++-- Could NOT find PkgConfig (missing: PKG_CONFIG_EXECUTABLE) 
++-- 
++-- SDL2 was configured with the following options:
++-- 
++-- Platform: Android-1
++-- 64-bit:   TRUE
++-- Compiler: <ANDROID_SDK>/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang
++-- Revision: SDL-release-2.32.8-0-g98d1f3a45
++-- 
++-- Subsystems:
++--   Atomic:	ON
++--   Audio:	ON
++--   Video:	ON
++--   Render:	ON
++--   Events:	ON
++--   Joystick:	ON
++--   Haptic:	ON
++--   Hidapi:	ON
++--   Power:	ON
++--   Threads:	ON
++--   Timers:	ON
++--   File:	ON
++--   Loadso:	ON
++--   CPUinfo:	ON
++--   Filesystem:	ON
++--   Sensor:	ON
++--   Locale:	ON
++--   Misc:	ON
++-- 
++-- Options:
++--   SDL2_DISABLE_INSTALL        (Wanted: ON): OFF
++--   SDL2_DISABLE_SDL2MAIN       (Wanted: OFF): OFF
++--   SDL2_DISABLE_UNINSTALL      (Wanted: OFF): OFF
++--   SDL_3DNOW                   (Wanted: OFF): OFF
++--   SDL_ALSA                    (Wanted: OFF): OFF
++--   SDL_ALSA_SHARED             (Wanted: OFF): OFF
++--   SDL_ALTIVEC                 (Wanted: ON): OFF
++--   SDL_ARMNEON                 (Wanted: OFF): OFF
++--   SDL_ARMSIMD                 (Wanted: OFF): OFF
++--   SDL_ARTS                    (Wanted: OFF): OFF
++--   SDL_ARTS_SHARED             (Wanted: OFF): OFF
++--   SDL_ASAN                    (Wanted: OFF): OFF
++--   SDL_ASSEMBLY                (Wanted: ON): ON
++--   SDL_ASSERTIONS              (Wanted: auto): auto
++--   SDL_BACKGROUNDING_SIGNAL    (Wanted: OFF): OFF
++--   SDL_CCACHE                  (Wanted: ON): OFF
++--   SDL_CLOCK_GETTIME           (Wanted: ON): ON
++--   SDL_COCOA                   (Wanted: OFF): OFF
++--   SDL_DBUS                    (Wanted: OFF): OFF
++--   SDL_DIRECTFB                (Wanted: OFF): OFF
++--   SDL_DIRECTFB_SHARED         (Wanted: OFF): OFF
++--   SDL_DIRECTX                 (Wanted: OFF): OFF
++--   SDL_DISKAUDIO               (Wanted: ON): ON
++--   SDL_DUMMYAUDIO              (Wanted: ON): ON
++--   SDL_DUMMYVIDEO              (Wanted: ON): ON
++--   SDL_ESD                     (Wanted: OFF): OFF
++--   SDL_ESD_SHARED              (Wanted: OFF): OFF
++--   SDL_FOREGROUNDING_SIGNAL    (Wanted: OFF): OFF
++--   SDL_FUSIONSOUND             (Wanted: OFF): OFF
++--   SDL_FUSIONSOUND_SHARED      (Wanted: OFF): OFF
++--   SDL_GCC_ATOMICS             (Wanted: ON): ON
++--   SDL_HIDAPI                  (Wanted: ON): ON
++--   SDL_HIDAPI_JOYSTICK         (Wanted: ON): ON
++--   SDL_HIDAPI_LIBUSB           (Wanted: OFF): OFF
++--   SDL_IBUS                    (Wanted: OFF): OFF
++--   SDL_INSTALL_TESTS           (Wanted: OFF): OFF
++--   SDL_JACK                    (Wanted: OFF): OFF
++--   SDL_JACK_SHARED             (Wanted: OFF): OFF
++--   SDL_KMSDRM                  (Wanted: OFF): OFF
++--   SDL_KMSDRM_SHARED           (Wanted: OFF): OFF
++--   SDL_LASX                    (Wanted: OFF): OFF
++--   SDL_LIBC                    (Wanted: ON): ON
++--   SDL_LIBICONV                (Wanted: OFF): OFF
++--   SDL_LIBSAMPLERATE           (Wanted: OFF): OFF
++--   SDL_LIBSAMPLERATE_SHARED    (Wanted: OFF): OFF
++--   SDL_LIBUDEV                 (Wanted: ON): OFF
++--   SDL_LSX                     (Wanted: OFF): OFF
++--   SDL_METAL                   (Wanted: OFF): OFF
++--   SDL_MMX                     (Wanted: OFF): OFF
++--   SDL_NAS                     (Wanted: OFF): OFF
++--   SDL_NAS_SHARED              (Wanted: OFF): OFF
++--   SDL_OFFSCREEN               (Wanted: ON): ON
++--   SDL_OPENGL                  (Wanted: ON): OFF
++--   SDL_OPENGLES                (Wanted: ON): ON
++--   SDL_OSS                     (Wanted: OFF): OFF
++--   SDL_PIPEWIRE                (Wanted: OFF): OFF
++--   SDL_PIPEWIRE_SHARED         (Wanted: OFF): OFF
++--   SDL_PTHREADS                (Wanted: ON): ON
++--   SDL_PTHREADS_SEM            (Wanted: ON): ON
++--   SDL_PULSEAUDIO              (Wanted: OFF): OFF
++--   SDL_PULSEAUDIO_SHARED       (Wanted: OFF): OFF
++--   SDL_RENDER_D3D              (Wanted: OFF): OFF
++--   SDL_RENDER_METAL            (Wanted: OFF): OFF
++--   SDL_RPATH                   (Wanted: OFF): OFF
++--   SDL_RPI                     (Wanted: OFF): OFF
++--   SDL_SNDIO                   (Wanted: OFF): OFF
++--   SDL_SNDIO_SHARED            (Wanted: OFF): OFF
++--   SDL_SSE                     (Wanted: OFF): OFF
++--   SDL_SSE2                    (Wanted: OFF): OFF
++--   SDL_SSE3                    (Wanted: OFF): OFF
++--   SDL_SSEMATH                 (Wanted: OFF): OFF
++--   SDL_STATIC_PIC              (Wanted: OFF): OFF
++--   SDL_SYSTEM_ICONV            (Wanted: ON): OFF
++--   SDL_TESTS                   (Wanted: OFF): OFF
++--   SDL_VENDOR_INFO             (Wanted: ): OFF
++--   SDL_VIRTUAL_JOYSTICK        (Wanted: ON): ON
++--   SDL_VIVANTE                 (Wanted: OFF): OFF
++--   SDL_VULKAN                  (Wanted: ON): ON
++--   SDL_WASAPI                  (Wanted: OFF): OFF
++--   SDL_WAYLAND                 (Wanted: OFF): OFF
++--   SDL_WAYLAND_LIBDECOR        (Wanted: OFF): OFF
++--   SDL_WAYLAND_LIBDECOR_SHARED (Wanted: OFF): OFF
++--   SDL_WAYLAND_QT_TOUCH        (Wanted: OFF): OFF
++--   SDL_WAYLAND_SHARED          (Wanted: OFF): OFF
++--   SDL_X11                     (Wanted: OFF): OFF
++--   SDL_X11_SHARED              (Wanted: OFF): OFF
++--   SDL_X11_XCURSOR             (Wanted: OFF): OFF
++--   SDL_X11_XDBE                (Wanted: OFF): OFF
++--   SDL_X11_XFIXES              (Wanted: OFF): OFF
++--   SDL_X11_XINPUT              (Wanted: OFF): OFF
++--   SDL_X11_XRANDR              (Wanted: OFF): OFF
++--   SDL_X11_XSCRNSAVER          (Wanted: OFF): OFF
++--   SDL_X11_XSHAPE              (Wanted: OFF): OFF
++--   SDL_XINPUT                  (Wanted: OFF): OFF
++-- 
++--  CFLAGS:        -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -idirafter "<PROJECT>/third_party/SDL2/src/video/khronos"
++--  EXTRA_CFLAGS:   -Wall -Wundef -fno-strict-aliasing -Wdocumentation -Wdocumentation-unknown-command -fcomment-block-commands=threadsafety -fcomment-block-commands=deprecated -Wdeclaration-after-statement -fvisibility=hidden -Wshadow -Wno-unused-local-typedefs -fcolor-diagnostics
++--  EXTRA_LDFLAGS:  -Wl,--no-undefined
++--  EXTRA_LIBS:    m;OpenSLES;dl;log;android;GLESv1_CM;GLESv2
++-- 
++--  Build Shared Library: ON
++--  Build Static Library: OFF
++-- 
++-- If something was not detected, although the libraries
++-- were installed, then make sure you have set the
++-- CFLAGS and LDFLAGS environment variables correctly.
++-- 
++CMake Warning at build-android-check/_deps/mdkr_harfbuzz-src/CMakeLists.txt:4 (message):
++  The main build system for HarfBuzz is Meson.  CMake build support is
++  community-maintained and is not actively supported by HarfBuzz developers.
++
++
++-- Configuring done
++-- Generating done
++-- Build files have been written to: <PROJECT>/build-android-check
+++ <ANDROID_SDK>/cmake/3.22.1/bin/cmake --build <PROJECT>/build-android-check --target mdkr64 -j 4
++[0/2] Re-checking globbed directories...
++[1/3] Building C object CMakeFiles/mdkr64.dir/platform/fast3d/gfx_gles_shader.c.o
++[2/3] Building C object CMakeFiles/mdkr64.dir/platform/fast3d/gfx_opengl.c.o
++[3/3] Linking CXX shared library libmain.so
+++ <ANDROID_SDK>/build-tools/35.0.0/aapt2 compile --dir <PROJECT>/android/app/src/main/res -o <PROJECT>/out/sdk-package/resources.zip
+++ <ANDROID_SDK>/build-tools/35.0.0/aapt2 link -I <ANDROID_SDK>/platforms/android-35/android.jar --manifest <PROJECT>/out/sdk-package/AndroidManifest.xml --min-sdk-version 26 --target-sdk-version 35 --java <PROJECT>/out/sdk-package/generated -o <PROJECT>/out/sdk-package/unsigned.apk <PROJECT>/out/sdk-package/resources.zip
+++ /usr/lib/jvm/java-17-openjdk-amd64/bin/java -m jdk.compiler/com.sun.tools.javac.Main -encoding UTF-8 --release 8 -classpath <ANDROID_SDK>/platforms/android-35/android.jar -d <PROJECT>/out/sdk-package/classes @<PROJECT>/out/sdk-package/sources.txt
++Note: Some input files use or override a deprecated API.
++Note: Recompile with -Xlint:deprecation for details.
+++ /usr/lib/jvm/java-17-openjdk-amd64/bin/java -cp <ANDROID_SDK>/build-tools/35.0.0/lib/d8.jar com.android.tools.r8.D8 --min-api 26 --lib <ANDROID_SDK>/platforms/android-35/android.jar --output <PROJECT>/out/sdk-package/dex <PROJECT>/out/sdk-package/classes.jar
+++ <ANDROID_SDK>/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded <PROJECT>/out/sdk-package/lib/libmain.so
+++ <ANDROID_SDK>/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded <PROJECT>/out/sdk-package/lib/libSDL2.so
+++ <ANDROID_SDK>/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded <PROJECT>/out/sdk-package/lib/libc++_shared.so
+++ <ANDROID_SDK>/build-tools/35.0.0/zipalign -P 16 -f 4 <PROJECT>/out/sdk-package/unsigned.apk <PROJECT>/out/sdk-package/aligned.apk
+++ /usr/lib/jvm/java-17-openjdk-amd64/bin/java -jar <ANDROID_SDK>/build-tools/35.0.0/lib/apksigner.jar sign --ks <PROJECT>/.build-tools/goldenballoon-debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out <PROJECT>/out/GoldenBalloon-arm64-debug.apk <PROJECT>/out/sdk-package/aligned.apk
+++ /usr/lib/jvm/java-17-openjdk-amd64/bin/java -jar <ANDROID_SDK>/build-tools/35.0.0/lib/apksigner.jar verify --verbose <PROJECT>/out/GoldenBalloon-arm64-debug.apk
++Verifies
++Verified using v1 scheme (JAR signing): false
++Verified using v2 scheme (APK Signature Scheme v2): true
++Verified using v3 scheme (APK Signature Scheme v3): true
++Verified using v3.1 scheme (APK Signature Scheme v3.1): false
++Verified using v4 scheme (APK Signature Scheme v4): false
++Verified for SourceStamp: false
++Number of signers: 1
+++ <ANDROID_SDK>/build-tools/35.0.0/zipalign -c -P 16 4 <PROJECT>/out/GoldenBalloon-arm64-debug.apk
++PASS ARM64 / 16KiB ELF: lib/arm64-v8a/libmain.so
++PASS ARM64 / 16KiB ELF: lib/arm64-v8a/libSDL2.so
++PASS ARM64 / 16KiB ELF: lib/arm64-v8a/libc++_shared.so
++APK structural verification passed; device execution is a separate check.
++APK: <PROJECT>/out/GoldenBalloon-arm64-debug.apk 
++Native symbols: <PROJECT>/out/GoldenBalloon-arm64-symbols.zip

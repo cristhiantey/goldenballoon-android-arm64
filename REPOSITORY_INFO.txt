@@ -1,0 +1,4 @@
+Nombre sugerido: goldenballoon-android-arm64
+Descripción: Experimental Android ARM64 port of Golden Balloon by Christian Tay, AI-assisted. Bring your own legally dumped ROM.
+Release sugerida: Android ARM64 Experimental - Revision 2
+Tag sugerido: android-arm64-r2-experimental
