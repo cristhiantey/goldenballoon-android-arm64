@@ -19,7 +19,7 @@ Port experimental de **Golden Balloon** para dispositivos Android, con soporte p
 
 Puedes descargar las versiones disponibles desde:
 
-**[GitHub Releases](https://github.com/cristhiantey/goldenballoon-android-arm64/releases/tag/v0.4-android)**
+**[GitHub Releases](https://github.com/cristhiantey/goldenballoon-android-arm64/releases/tag/v4.2-android)**
 
 ---
 
